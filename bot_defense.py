@@ -72,6 +72,10 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # =========================
 SPIN_GIF_URL = os.getenv("SPIN_GIF_URL", "https://media.discordapp.net/attachments/1417523094658220184/1417531987291275284/giphy.gif?ex=68cad30a&is=68c9818a&hm=257a146d5a27493ef57c6a3fd5858ad789f5f1a0e84f136f9526a1c159d60a9c&=&width=480&height=338")
 THUMB_URL = os.getenv("THUMB_URL", "")  # optionnel
+# --- Rôle CROUPIER (au choix : ID ou nom) ---
+CROUPIER_ROLE_ID = int(os.getenv("CROUPIER_ROLE_ID", "0"))  # mets l’ID si tu veux
+CROUPIER_ROLE_NAME = os.getenv("CROUPIER_ROLE_NAME", "CROUPIER")  # sinon par nom
+
 
 COLOR_RED = 0xE74C3C
 COLOR_BLACK = 0x2C3E50
@@ -573,7 +577,33 @@ async def roulette_cmd(interaction: discord.Interaction, mise: Optional[int] = 0
     if open_lobbies:
         game = open_lobbies[0]
         game.joiner_id = user_id
-        view = ChoiceView(game)
+        view = CroupierView(game)
+
+        croupier_ping = ""
+        # Si tu veux VRAIMENT ping le rôle : Mets l'ID dans CROUPIER_ROLE_ID et fais <@&ID>
+        if CROUPIER_ROLE_ID:
+            croupier_ping = f"<@&{CROUPIER_ROLE_ID}> "
+        elif CROUPIER_ROLE_NAME:
+            croupier_ping = f"**{CROUPIER_ROLE_NAME}** "
+
+        embed = discord.Embed(
+            title="🎩 Appel CROUPIER",
+            description=(
+                f"{croupier_ping}— merci de venir **récupérer les mises**.\n\n"
+                f"👥 Joueurs : <@{game.starter_id}> vs <@{game.joiner_id}>\n"
+                f"💵 Mise : **{game.bet}** kamas\n\n"
+                f"Quand c'est bon, cliquez sur **« Mises récupérées »** pour passer au choix de la couleur."
+            ),
+            color=COLOR_GOLD
+        )
+        if THUMB_URL:
+            embed.set_thumbnail(url=THUMB_URL)
+
+        await interaction.response.send_message(embed=embed, view=view)
+        sent = await interaction.original_response()
+        game.lobby_msg_id = sent.id
+        return
+
 
         title = "👥 **JOUEUR REJOINT !**"
         desc = (
@@ -641,6 +671,52 @@ async def roulette_cmd(interaction: discord.Interaction, mise: Optional[int] = 0
                 remove_game(g)
                 break
     bot.loop.create_task(lobby_timeout())
+
+class CroupierView(discord.ui.View):
+    def __init__(self, game: RouletteGame, *, timeout: float = 300.0):
+        super().__init__(timeout=timeout)
+        self.game = game
+
+    async def _is_croupier(self, interaction: discord.Interaction) -> bool:
+        member: discord.Member = interaction.user  # type: ignore
+        if CROUPIER_ROLE_ID and any(r.id == CROUPIER_ROLE_ID for r in member.roles):
+            return True
+        if any(r.name.upper() == CROUPIER_ROLE_NAME.upper() for r in member.roles):
+            return True
+        await interaction.response.send_message("⛔ Réservé au rôle **CROUPIER**.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="✅ Mises récupérées", style=discord.ButtonStyle.success, emoji="💰")
+    async def btn_valider(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._is_croupier(interaction):
+            return
+
+        # Passe à l'étape "choix couleur" (créateur = starter)
+        desc = (
+            f"👥 Joueurs : <@{self.game.starter_id}> vs <@{self.game.joiner_id}>\n"
+            f"💵 Mise : **{self.game.bet}** kamas\n\n"
+            f"🎯 <@{self.game.starter_id}>, choisis la **couleur** pour lancer la roue :"
+        )
+        embed = discord.Embed(title="🎩 CROUPIER : Mises validées", description=desc, color=COLOR_GOLD)
+        if THUMB_URL:
+            embed.set_thumbnail(url=THUMB_URL)
+
+        choice_view = ChoiceView(self.game)  # ta vue existante Rouge / Noir
+        await interaction.response.edit_message(embed=embed, view=choice_view)
+
+    @discord.ui.button(label="❌ Annuler la partie", style=discord.ButtonStyle.danger)
+    async def btn_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._is_croupier(interaction):
+            return
+        remove_game(self.game)
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title="🛑 Partie annulée par le CROUPIER",
+                description=f"Créateur : <@{self.game.starter_id}> — Mise : {self.game.bet} kamas",
+                color=COLOR_RED,
+            ),
+            view=None
+        )
 
 # =========================
 #  Sync & Run
