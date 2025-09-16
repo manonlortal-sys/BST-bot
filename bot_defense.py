@@ -70,7 +70,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # =========================
 #  CONFIG visuelle Roulette
 # =========================
-SPIN_GIF_URL = os.getenv("SPIN_GIF_URL", "https://media.discordapp.net/attachments/1417523094658220184/1417523185930473605/giphy.gif?ex=68cacad7&is=68c97957&hm=da5d7da12dbc00b4e5ec4fcf4ce8fd864fb89aad1240fa2a73babe5a865d3778&=&width=625&height=625")
+SPIN_GIF_URL = os.getenv("SPIN_GIF_URL", "https://media.discordapp.net/attachments/1417523094658220184/1417531987291275284/giphy.gif?ex=68cad30a&is=68c9818a&hm=257a146d5a27493ef57c6a3fd5858ad789f5f1a0e84f136f9526a1c159d60a9c&=&width=480&height=338")
 THUMB_URL = os.getenv("THUMB_URL", "")  # optionnel
 
 COLOR_RED = 0xE74C3C
