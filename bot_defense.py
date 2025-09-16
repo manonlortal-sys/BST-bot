@@ -62,7 +62,6 @@ LOCAL_TZ = "Europe/Paris"
 # Intents: commandes préfixées nécessitent message_content=True
 intents = discord.Intents.default()
 intents.guilds = True
-intents.messages = True
 intents.reactions = True
 intents.message_content = True
 
