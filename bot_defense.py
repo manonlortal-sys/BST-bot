@@ -10,6 +10,23 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import io
+import os
+from flask import Flask
+import threading
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot Discord actif"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+# Démarrer Flask dans un thread séparé
+threading.Thread(target=run_flask, daemon=True).start()
+
 
 CHANNEL_ID = 1327548733398843413
 
