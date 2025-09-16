@@ -1,22 +1,35 @@
+# =========================
+#  Bot Défense – Discord
+#  (Render Web Service)
+# =========================
+
+# --- Réglages pour Render/Matplotlib (headless) ---
+import os
+os.environ.setdefault("MPLBACKEND", "Agg")
+
+# --- Imports standard ---
+import io
+import threading
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+# --- Discord & Flask ---
 import discord
 from discord.ext import commands
-from datetime import datetime, timedelta
-from collections import defaultdict
 from flask import Flask
-from threading import Thread
-import pytz
-from zoneinfo import ZoneInfo
-from collections import defaultdict
-from datetime import datetime, timedelta
-import matplotlib.pyplot as plt
-import io
-import os
-from flask import Flask
-import threading
 
+# --- Matplotlib (pour les graphs) ---
+import matplotlib.pyplot as plt
+
+
+# =========================
+#  Mini serveur HTTP (Web Service)
+#  -> occupe le port $PORT exigé par Render
+# =========================
 app = Flask(__name__)
 
-@app.route('/')
+@app.route("/")
 def home():
     return "Bot Discord actif"
 
@@ -24,47 +37,68 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-# Démarrer Flask dans un thread séparé
+# Lance Flask en arrière-plan
 threading.Thread(target=run_flask, daemon=True).start()
 
 
-CHANNEL_ID = 1327548733398843413
+# =========================
+#  Constantes / Intents
+# =========================
+CHANNEL_ID = 1327548733398843413  # <-- remplace si besoin
+LOCAL_TZ = "Europe/Paris"
 
 intents = discord.Intents.default()
-intents.messages = True
 intents.message_content = True
+intents.messages = True
 intents.reactions = True
 intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 occurences = defaultdict(int)
 
-# --- Détection des messages de défense ---
-def message_mentionne_def(message):
-    def_roles = ["Def", "Def2"]
+
+# =========================
+#  Aide: détection mention @Def / @Def2
+# =========================
+def message_mentionne_def(message: discord.Message) -> bool:
+    def_roles = {"Def", "Def2"}
+
+    # Mentions de rôles
     for role in message.role_mentions:
         if role.name in def_roles:
             return True
+
+    # Mentions textuelles dans embeds
     for embed in message.embeds:
         if embed.description and ("@def" in embed.description.lower() or "@def2" in embed.description.lower()):
             return True
         if embed.title and ("@def" in embed.title.lower() or "@def2" in embed.title.lower()):
             return True
-    if "@def" in message.content.lower() or "@def2" in message.content.lower():
+
+    # Mentions textuelles dans le contenu
+    content_lower = (message.content or "").lower()
+    if "@def" in content_lower or "@def2" in content_lower:
         return True
+
+    # Messages de bots (ex: webhooks)
     if message.author.bot:
-        if "@def" in message.content.lower() or "@def2" in message.content.lower():
+        if "@def" in content_lower or "@def2" in content_lower:
             return True
         for embed in message.embeds:
             if embed.description and ("@def" in embed.description.lower() or "@def2" in embed.description.lower()):
                 return True
             if embed.title and ("@def" in embed.title.lower() or "@def2" in embed.title.lower()):
                 return True
+
     return False
 
+
+# =========================
+#  Commande: !defstats
+# =========================
 @bot.command()
-async def defstats(ctx):
-    now = datetime.now(ZoneInfo("Europe/Paris"))
+async def defstats(ctx: commands.Context):
+    now = datetime.now(ZoneInfo(LOCAL_TZ))
     one_week_ago = now - timedelta(days=7)
     channel = bot.get_channel(CHANNEL_ID)
 
@@ -82,16 +116,18 @@ async def defstats(ctx):
     simultaneous_count = 0
     thumbsup_stats = defaultdict(lambda: {"count": 0, "name": ""})
     attaque_par_alliance = defaultdict(int)
-    alliances = ["La Bande", "Ateam", "Intmi", "Clan Oshimo", "Ivory", "La Secte", "Gueux randoms"]
 
+    alliances = ["La Bande", "Ateam", "Intmi", "Clan Oshimo", "Ivory", "La Secte", "Gueux randoms"]
     last_ping_time = None
 
     async for message in channel.history(limit=None, after=one_week_ago, oldest_first=True):
         if message.author != bot.user and message_mentionne_def(message):
+            # anti-doublons trop rapprochés
             if last_ping_time and (message.created_at - last_ping_time).total_seconds() < 15:
                 continue
             last_ping_time = message.created_at
 
+            # Détection Def / Def2
             mentions_def1 = any(role.name.lower() == "def" for role in message.role_mentions)
             mentions_def2 = any(role.name.lower() == "def2" for role in message.role_mentions)
 
@@ -105,7 +141,7 @@ async def defstats(ctx):
                     mentions_def1 |= "@def" in title
                     mentions_def2 |= "@def2" in title
 
-            content_lower = message.content.lower()
+            content_lower = (message.content or "").lower()
             mentions_def1 |= "@def" in content_lower
             mentions_def2 |= "@def2" in content_lower
 
@@ -117,6 +153,7 @@ async def defstats(ctx):
             elif mentions_def2:
                 def2_count += 1
 
+            # Réactions utiles
             utilisateurs_comptes = set()
             for reaction in message.reactions:
                 if str(reaction.emoji) == victory_emoji:
@@ -132,27 +169,31 @@ async def defstats(ctx):
                             try:
                                 member = await ctx.guild.fetch_member(user_react.id)
                                 name = member.display_name
-                            except:
+                            except Exception:
                                 name = user_react.name
                             thumbsup_stats[user_react.id]["count"] += 1
                             thumbsup_stats[user_react.id]["name"] = name
 
+            # Mentions directes (compte la participation)
             for member in message.mentions:
                 if not member.bot and member.id not in utilisateurs_comptes:
                     utilisateurs_comptes.add(member.id)
                     thumbsup_stats[member.id]["count"] += 1
                     thumbsup_stats[member.id]["name"] = member.display_name
 
+            # Comptage par alliances
             for alliance in alliances:
                 if alliance.lower() in content_lower:
                     attaque_par_alliance[alliance] += 1
                 for embed in message.embeds:
-                    if embed.description and alliance.lower() in embed.description.lower():
+                    if embed.description and alliance.lower() in (embed.description or "").lower():
                         attaque_par_alliance[alliance] += 1
-                    if embed.title and alliance.lower() in embed.title.lower():
+                    if embed.title and alliance.lower() in (embed.title or "").lower():
                         attaque_par_alliance[alliance] += 1
 
-    embed_color = 0x2ecc71 if victory_count >= defeat_count and victory_count >= rage_count else (0xe67e22 if defeat_count >= rage_count else 0xe74c3c)
+    # Couleur de l'embed selon le score dominant
+    embed_color = 0x2ecc71 if victory_count >= defeat_count and victory_count >= rage_count \
+        else (0xe67e22 if defeat_count >= rage_count else 0xe74c3c)
 
     embed = discord.Embed(
         title="📊 Statistiques des Défenses – 7 derniers jours",
@@ -168,35 +209,34 @@ async def defstats(ctx):
     embed.add_field(name="❌ Défaites", value=f"`{defeat_count}`", inline=True)
     embed.add_field(name="😡 Incomplètes", value=f"`{rage_count}`", inline=True)
 
+    # Top défenseurs (👍 + mentions)
     if thumbsup_stats:
-
-        # Fusion manuelle des pseudos
-        alias_mapping = {
+        # Fusion d'alias éventuels (IDs → IDs)
+        alias_mapping_raw = {
             "1383914690270466048": "994240541585854574",
         }
+        alias_mapping: dict[int, int] = {}
+        for k, v in alias_mapping_raw.items():
+            if k.isdigit() and v.isdigit():
+                alias_mapping[int(k)] = int(v)
 
-        # Étape 1 : créer une copie fusionnée des données
         fusion_stats = defaultdict(lambda: {"count": 0, "name": ""})
-
         for user_id, data in thumbsup_stats.items():
-            mapped_id = alias_mapping.get(user_id, user_id)
-            fusion_stats[mapped_id]["count"] += data["count"]
-            # on garde le nom du "compte principal"
-            if not fusion_stats[mapped_id]["name"] or user_id == mapped_id:
-                fusion_stats[mapped_id]["name"] = data["name"]
+            mapped = alias_mapping.get(user_id, user_id)
+            fusion_stats[mapped]["count"] += data["count"]
+            if not fusion_stats[mapped]["name"] or user_id == mapped:
+                fusion_stats[mapped]["name"] = data["name"]
 
-
-        # Étape 2 : trier
         sorted_defenders = sorted(fusion_stats.values(), key=lambda x: x["count"], reverse=True)
-
-        sorted_defenders = sorted(thumbsup_stats.values(), key=lambda x: x["count"], reverse=True)
         lines = [f"{user['name']:<40} | {user['count']}" for user in sorted_defenders]
         header = f"{'Défenseur':<40} | Def\n{'-'*40} | ----"
+
         chunks = [header]
         for line in lines:
             if len(chunks[-1]) + len(line) + 1 > 950:
                 chunks.append(header)
             chunks[-1] += f"\n{line}"
+
         for i, chunk in enumerate(chunks):
             title = "🧙 Top Défenseurs" if i == 0 else f"⬇️ Suite ({i+1})"
             embed.add_field(name=title, value=f"```{chunk}```", inline=False)
@@ -206,9 +246,13 @@ async def defstats(ctx):
     embed.set_footer(text=f"Mise à jour : {datetime.utcnow().strftime('%d/%m/%Y à %H:%M UTC')}")
     await ctx.send(embed=embed)
 
+
+# =========================
+#  Commande: !liste
+# =========================
 @bot.command()
-async def liste(ctx):
-    now = datetime.now(ZoneInfo("Europe/Paris"))
+async def liste(ctx: commands.Context):
+    now = datetime.now(ZoneInfo(LOCAL_TZ))
     one_week_ago = now - timedelta(days=7)
     channel = bot.get_channel(CHANNEL_ID)
     thumbsup_stats = defaultdict(lambda: {"count": 0, "name": ""})
@@ -224,10 +268,11 @@ async def liste(ctx):
                             try:
                                 member = await ctx.guild.fetch_member(user_react.id)
                                 name = member.display_name
-                            except:
+                            except Exception:
                                 name = user_react.name
                             thumbsup_stats[user_react.id]["count"] += 1
                             thumbsup_stats[user_react.id]["name"] = name
+
             for member in message.mentions:
                 if not member.bot and member.id not in utilisateurs_comptes:
                     utilisateurs_comptes.add(member.id)
@@ -241,82 +286,31 @@ async def liste(ctx):
     else:
         await ctx.send("Aucun défenseur détecté dans les dernières 24h.")
 
-    import matplotlib.pyplot as plt
-    import io
 
-    @bot.command()
-    async def alliance(ctx):
-        now = datetime.now(ZoneInfo("Europe/Paris"))
-        one_week_ago = now - timedelta(days=7)
-        channel = bot.get_channel(CHANNEL_ID)
-
-        attaques = []
-
-        async for message in channel.history(limit=None, after=one_week_ago, oldest_first=True):
-            content_lower = message.content.lower()
-            for embed in message.embeds:
-                content_lower += f" {embed.title or ''} {embed.description or ''}".lower()
-
-            if any(alliance.lower() in content_lower for alliance in [
-                "Vae Victis", "Horizon", "Eclipse", "New Era", 
-                "Autre alliance, merci de préciser la guilde", "Destin"
-            ]):
-                local_time = message.created_at.replace(
-                    tzinfo=ZoneInfo("UTC")
-                ).astimezone(ZoneInfo("Europe/Paris"))
-                attaques.append(local_time.hour)
-
-        if not attaques:
-            await ctx.send("Aucune attaque détectée dans les 7 derniers jours.")
-            return
-
-        # Comptage par tranches de 2 heures
-        tranches = [f"{h:02d}h-{(h+2)%24:02d}h" for h in range(0, 24, 2)]
-        compteur = [0]*12
-
-        for heure in attaques:
-            index = heure // 2
-            compteur[index] += 1
-
-        # Création du camembert
-        plt.figure(figsize=(6,6))
-        plt.pie(
-            compteur, 
-            labels=tranches, 
-            autopct=lambda p: f'{int(round(p*sum(compteur)/100))}' if p > 0 else '',
-            startangle=90
-        )
-        plt.title("Répartition des attaques par tranches horaires (7 jours)")
-
-        # Sauvegarde en mémoire et envoi
-        buf = io.BytesIO()
-        plt.savefig(buf, format="png", bbox_inches="tight")
-        buf.seek(0)
-        plt.close()
-
-        file = discord.File(buf, filename="attaques.png")
-        await ctx.send(file=file)
-
+# =========================
+#  Commande: !alliance
+#   (répartition horaire par 2h sur 7 jours)
+# =========================
 @bot.command()
-async def alliance(ctx):
-    now = datetime.now(ZoneInfo("Europe/Paris"))
+async def alliance(ctx: commands.Context):
+    now = datetime.now(ZoneInfo(LOCAL_TZ))
     one_week_ago = now - timedelta(days=7)
     channel = bot.get_channel(CHANNEL_ID)
 
     attaques = []
 
     async for message in channel.history(limit=None, after=one_week_ago, oldest_first=True):
-        content_lower = message.content.lower()
+        content_lower = (message.content or "").lower()
         for embed in message.embeds:
-            content_lower += f" {embed.title or ''} {embed.description or ''}".lower()
+            content_lower += f" {(embed.title or '')} {(embed.description or '')}".lower()
 
         if any(alliance.lower() in content_lower for alliance in [
-            "Vae Victis", "Horizon", "Eclipse", "New Era", 
+            "Vae Victis", "Horizon", "Eclipse", "New Era",
             "Autre alliance, merci de préciser la guilde", "Destin"
         ]):
             local_time = message.created_at.replace(
                 tzinfo=ZoneInfo("UTC")
-            ).astimezone(ZoneInfo("Europe/Paris"))
+            ).astimezone(ZoneInfo(LOCAL_TZ))
             attaques.append(local_time.hour)
 
     if not attaques:
@@ -325,23 +319,22 @@ async def alliance(ctx):
 
     # Comptage par tranches de 2 heures
     tranches = [f"{h:02d}h-{(h+2)%24:02d}h" for h in range(0, 24, 2)]
-    compteur = [0]*12
+    compteur = [0] * 12
 
     for heure in attaques:
         index = heure // 2
         compteur[index] += 1
 
-    # Création du camembert
-    plt.figure(figsize=(6,6))
+    # Camembert
+    plt.figure(figsize=(6, 6))
     plt.pie(
-        compteur, 
-        labels=tranches, 
+        compteur,
+        labels=tranches,
         autopct=lambda p: f'{int(round(p*sum(compteur)/100))}' if p > 0 else '',
         startangle=90
     )
     plt.title("Répartition des attaques par tranches horaires (7 jours)")
 
-    # Sauvegarde en mémoire et envoi
     buf = io.BytesIO()
     plt.savefig(buf, format="png", bbox_inches="tight")
     buf.seek(0)
@@ -350,27 +343,24 @@ async def alliance(ctx):
     file = discord.File(buf, filename="attaques.png")
     await ctx.send(file=file)
 
+
+# =========================
+#  Commande: !alliances7j
+#   (liste chronologique avec liens)
+# =========================
 @bot.command(name="alliances7j")
 async def alliances7j(ctx: commands.Context):
-    """
-    Liste chronologique sur 48h: <date heure> — <Alliance> — <lien>
-    """
-    # --- Paramètres ---
-    tz = ZoneInfo(LOCAL_TZ) if 'LOCAL_TZ' in globals() else ZoneInfo("Europe/Paris")
+    tz = ZoneInfo(LOCAL_TZ)
     now = datetime.now(tz)
     since = now - timedelta(days=7)
 
-    # Mappe des alliances que tu veux détecter (ajoute/retire librement)
-    # clé = motif à chercher (minuscule), valeur = libellé affiché
     ALLIANCES_MAP = {
         "vae victis": "Vae Victis",
         "horizon": "Horizon",
         "eclipse": "Eclipse",
         "new era": "New Era",
         "destin": "Destin",
-        # Exemple de libellé long que tu avais:
         "autre alliance, merci de préciser la guilde": "Autre alliance (à préciser)",
-        # Tu peux en ajouter d'autres ici:
         # "clan oshimo": "Clan Oshimo",
         # "ivory": "Ivory",
         # "la secte": "La Secte",
@@ -391,7 +381,6 @@ async def alliances7j(ctx: commands.Context):
                 return label
         return None
 
-    # Récupération des messages depuis 48h
     entries: list[tuple[datetime, str, str]] = []  # (datetime_local, alliance_label, jump_url)
 
     async for message in channel.history(limit=None, after=since, oldest_first=True):
@@ -403,7 +392,6 @@ async def alliances7j(ctx: commands.Context):
 
         alliance = detect_alliance(text_lower)
         if alliance:
-            # created_at est normalement en UTC aware; on convertit proprement
             created_utc = message.created_at
             if created_utc.tzinfo is None:
                 created_utc = created_utc.replace(tzinfo=timezone.utc)
@@ -417,7 +405,7 @@ async def alliances7j(ctx: commands.Context):
     # Tri chrono
     entries.sort(key=lambda x: x[0])
 
-    # Mise en forme et envoi (en chunks <= 2000 caractères)
+    # Envoi en plusieurs messages si nécessaire
     def fmt_line(dt: datetime, alliance: str, url: str) -> str:
         return f"{dt.strftime('%d/%m %H:%M')} — {alliance} — {url}"
 
@@ -425,7 +413,7 @@ async def alliances7j(ctx: commands.Context):
     block = header
     for dt_local, alliance, url in entries:
         line = fmt_line(dt_local, alliance, url) + "\n"
-        if len(block) + len(line) > 1800:  # marge de sécurité
+        if len(block) + len(line) > 1800:
             await ctx.send(block)
             block = ""
         block += line
@@ -433,8 +421,13 @@ async def alliances7j(ctx: commands.Context):
     if block:
         await ctx.send(block)
 
+
+# =========================
+#  Commande: !graphic
+#   (génère 2 graphs à partir des embeds postés par le bot)
+# =========================
 @bot.command()
-async def graphic(ctx):
+async def graphic(ctx: commands.Context):
     channel = bot.get_channel(CHANNEL_ID)
     messages = []
     async for message in channel.history(limit=5000):
@@ -449,10 +442,7 @@ async def graphic(ctx):
         return
 
     import re
-    import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
-    import io
-    from datetime import timezone
 
     dates = []
     victories = []
@@ -502,7 +492,7 @@ async def graphic(ctx):
     defeats_pct = [d / t * 100 for d, t in zip(defeats, totals)]
     incompletes_pct = [i / t * 100 for i, t in zip(incompletes, totals)]
 
-    # --- Graphique 1 : Pourcentages ---
+    # Graphique 1 : Pourcentages
     plt.figure(figsize=(10, 6))
     plt.plot(dates, victories_pct, label="🏆 Victoires (%)", color="green", marker='o')
     plt.plot(dates, defeats_pct, label="❌ Défaites (%)", color="red", marker='o')
@@ -521,7 +511,7 @@ async def graphic(ctx):
     plt.savefig(buf1, format='png', dpi=150)
     plt.close()
 
-    # --- Graphique 2 : Valeurs absolues ---
+    # Graphique 2 : Valeurs absolues
     plt.figure(figsize=(10, 6))
     plt.plot(dates, victories, label="🏆 Victoires", color="green", marker='o')
     plt.plot(dates, defeats, label="❌ Défaites", color="red", marker='o')
@@ -547,4 +537,15 @@ async def graphic(ctx):
     await ctx.send(file=discord.File(fp=buf2, filename="defenses_valeurs.png"))
 
 
-client.run(os.getenv("DISCORD_TOKEN"))
+# =========================
+#  Démarrage du bot
+# =========================
+@bot.event
+async def on_ready():
+    print(f"Bot connecté: {bot.user} (ID: {bot.user.id})")
+
+token = os.getenv("DISCORD_TOKEN")
+if not token:
+    raise SystemExit("DISCORD_TOKEN manquant")
+
+bot.run(token)
