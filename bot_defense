@@ -11,8 +11,6 @@ from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import io
 
-
-TOKEN = 'MTM2OTMyNjkzMDQ0ODM1NTQ4MA.Gx9fqp.sEoVm-kzqoPKJ8UUmAm8hp3cnNukcRpuqEpaoI'
 CHANNEL_ID = 1327548733398843413
 
 intents = discord.Intents.default()
@@ -532,5 +530,4 @@ async def graphic(ctx):
     await ctx.send(file=discord.File(fp=buf2, filename="defenses_valeurs.png"))
 
 
-bot.run(
-    'MTM2OTMyNjkzMDQ0ODM1NTQ4MA.Gx9fqp.sEoVm-kzqoPKJ8UUmAm8hp3cnNukcRpuqEpaoI')
+bot.run
