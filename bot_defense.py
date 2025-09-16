@@ -1,7 +1,8 @@
 # =========================
 #  Bot Unifié – Défense + Roulette (Render Web Service)
+#  Fichier: bot_defense.py
 #  - Préfixe: !defstats, !liste, !alliance, !alliances7j, !graphic
-#  - Slash:   /roulette [mise]
+#  - Slash:   /roulette [mise] (kamas)
 #  - Multi-lobbies autorisés par salon (roulette)
 #  - Compte à rebours 5→1 avec GIF de spin
 # =========================
@@ -17,7 +18,7 @@ import random
 import asyncio
 import re
 from dataclasses import dataclass
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -58,7 +59,7 @@ threading.Thread(target=run_flask, daemon=True).start()
 CHANNEL_ID = 1327548733398843413  # <-- remplace si besoin
 LOCAL_TZ = "Europe/Paris"
 
-# Intents: préfixe nécessite message_content=True
+# Intents: commandes préfixées nécessitent message_content=True
 intents = discord.Intents.default()
 intents.guilds = True
 intents.messages = True
@@ -78,6 +79,7 @@ COLOR_BLACK = 0x2C3E50
 COLOR_GREEN = 0x2ECC71
 COLOR_GOLD = 0xF1C40F
 
+# Numéros rouges (roulette européenne)
 RED_NUMBERS = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
 
 # =========================
@@ -120,11 +122,11 @@ async def defstats(ctx: commands.Context):
 
     victory_emoji, defeat_emoji, rage_emoji, thumbsup_emoji = "🏆", "❌", "😡", "👍"
     victory_count = defeat_count = rage_count = checked_messages = def1_count = def2_count = simultaneous_count = 0
-    thumbsup_stats = defaultdict(lambda: {"count": 0, "name": ""})
-    attaque_par_alliance = defaultdict(int)
+    thumbsup_stats: Dict[int, Dict[str, object]] = defaultdict(lambda: {"count": 0, "name": ""})
+    attaque_par_alliance: Dict[str, int] = defaultdict(int)
 
     alliances = ["La Bande", "Ateam", "Intmi", "Clan Oshimo", "Ivory", "La Secte", "Gueux randoms"]
-    last_ping_time = None
+    last_ping_time: Optional[datetime] = None
 
     async for message in channel.history(limit=None, after=one_week_ago, oldest_first=True):
         if message.author != bot.user and message_mentionne_def(message):
@@ -155,7 +157,7 @@ async def defstats(ctx: commands.Context):
             elif mentions_def2:
                 def2_count += 1
 
-            utilisateurs_comptes = set()
+            utilisateurs_comptes: set[int] = set()
             for reaction in message.reactions:
                 if str(reaction.emoji) == victory_emoji:
                     victory_count += 1
@@ -172,13 +174,13 @@ async def defstats(ctx: commands.Context):
                                 name = member.display_name
                             except Exception:
                                 name = user_react.name
-                            thumbsup_stats[user_react.id]["count"] += 1
+                            thumbsup_stats[user_react.id]["count"] = int(thumbsup_stats[user_react.id]["count"]) + 1
                             thumbsup_stats[user_react.id]["name"] = name
 
             for member in message.mentions:
                 if not member.bot and member.id not in utilisateurs_comptes:
                     utilisateurs_comptes.add(member.id)
-                    thumbsup_stats[member.id]["count"] += 1
+                    thumbsup_stats[member.id]["count"] = int(thumbsup_stats[member.id]["count"]) + 1
                     thumbsup_stats[member.id]["name"] = member.display_name
 
             for a in alliances:
@@ -202,14 +204,14 @@ async def defstats(ctx: commands.Context):
     embed.add_field(name="😡 Incomplètes", value=f"`{rage_count}`", inline=True)
 
     if thumbsup_stats:
-        alias_mapping = {1383914690270466048: 994240541585854574}
-        fusion_stats = defaultdict(lambda: {"count": 0, "name": ""})
+        alias_mapping: Dict[int, int] = {1383914690270466048: 994240541585854574}
+        fusion_stats: Dict[int, Dict[str, object]] = defaultdict(lambda: {"count": 0, "name": ""})
         for user_id, data in thumbsup_stats.items():
             mapped = alias_mapping.get(user_id, user_id)
-            fusion_stats[mapped]["count"] += data["count"]
+            fusion_stats[mapped]["count"] = int(fusion_stats[mapped]["count"]) + int(data["count"])  # type: ignore
             if not fusion_stats[mapped]["name"] or user_id == mapped:
                 fusion_stats[mapped]["name"] = data["name"]
-        sorted_defenders = sorted(fusion_stats.values(), key=lambda x: x["count"], reverse=True)
+        sorted_defenders = sorted(fusion_stats.values(), key=lambda x: int(x["count"]), reverse=True)
         lines = [f"{u['name']:<40} | {u['count']}" for u in sorted_defenders]
         header = f"{'Défenseur':<40} | Def\n{'-'*40} | ----"
         chunks = [header]
@@ -235,10 +237,10 @@ async def liste(ctx: commands.Context):
     if not isinstance(channel, (discord.TextChannel, discord.Thread, discord.ForumChannel)):
         await ctx.send("Channel introuvable ou non textuel.")
         return
-    thumbsup_stats = defaultdict(lambda: {"count": 0, "name": ""})
+    thumbsup_stats: Dict[int, Dict[str, object]] = defaultdict(lambda: {"count": 0, "name": ""})
     async for message in channel.history(limit=None, after=one_week_ago, oldest_first=True):
         if message_mentionne_def(message):
-            utilisateurs_comptes = set()
+            utilisateurs_comptes: set[int] = set()
             for reaction in message.reactions:
                 if str(reaction.emoji) == "👍":
                     async for user_react in reaction.users():
@@ -249,15 +251,15 @@ async def liste(ctx: commands.Context):
                                 name = member.display_name
                             except Exception:
                                 name = user_react.name
-                            thumbsup_stats[user_react.id]["count"] += 1
+                            thumbsup_stats[user_react.id]["count"] = int(thumbsup_stats[user_react.id]["count"]) + 1
                             thumbsup_stats[user_react.id]["name"] = name
             for member in message.mentions:
                 if not member.bot and member.id not in utilisateurs_comptes:
                     utilisateurs_comptes.add(member.id)
-                    thumbsup_stats[member.id]["count"] += 1
+                    thumbsup_stats[member.id]["count"] = int(thumbsup_stats[member.id]["count"]) + 1
                     thumbsup_stats[member.id]["name"] = member.display_name
     if thumbsup_stats:
-        sorted_defenders = sorted(thumbsup_stats.values(), key=lambda x: x["count"], reverse=True)
+        sorted_defenders = sorted(thumbsup_stats.values(), key=lambda x: int(x["count"]), reverse=True)
         lines = [f"{u['name']} : {u['count']} def" for u in sorted_defenders]
         await ctx.send("\n".join(lines))
     else:
@@ -272,7 +274,7 @@ async def alliance(ctx: commands.Context):
     if not isinstance(channel, (discord.TextChannel, discord.Thread, discord.ForumChannel)):
         await ctx.send("Channel introuvable ou non textuel.")
         return
-    attaques = []
+    attaques: List[int] = []
     async for message in channel.history(limit=None, after=one_week_ago, oldest_first=True):
         content_lower = (message.content or "").lower()
         for embed in message.embeds:
@@ -305,7 +307,7 @@ async def alliances7j(ctx: commands.Context):
     tz = ZoneInfo(LOCAL_TZ)
     now = datetime.now(tz)
     since = now - timedelta(days=7)
-    ALLIANCES_MAP = {
+    ALLIANCES_MAP: Dict[str, str] = {
         "vae victis": "Vae Victis",
         "horizon": "Horizon",
         "eclipse": "Eclipse",
@@ -322,7 +324,7 @@ async def alliances7j(ctx: commands.Context):
             if key in text_lower:
                 return label
         return None
-    entries: List[tuple[datetime, str, str]] = []
+    entries: List[Tuple[datetime, str, str]] = []
     async for message in channel.history(limit=None, after=since, oldest_first=True):
         parts = [(message.content or "")]
         for e in message.embeds:
@@ -359,7 +361,7 @@ async def graphic(ctx: commands.Context):
     if not isinstance(channel, (discord.TextChannel, discord.Thread, discord.ForumChannel)):
         await ctx.send("Channel introuvable ou non textuel.")
         return
-    messages = []
+    messages: List[discord.Message] = []
     async for message in channel.history(limit=5000):
         if message.author == bot.user and message.embeds:
             messages.append(message)
@@ -369,11 +371,11 @@ async def graphic(ctx: commands.Context):
     if not messages:
         await ctx.send("Aucun message de statistiques trouvé.")
         return
-    dates = []
-    victories = []
-    defeats = []
-    incompletes = []
-    totals = []
+    dates: List[datetime] = []
+    victories: List[int] = []
+    defeats: List[int] = []
+    incompletes: List[int] = []
+    totals: List[int] = []
     regex_vic = re.compile(r"🏆 Victoires\s*`(\d+)`", re.IGNORECASE)
     regex_def = re.compile(r"❌ Défaites\s*`(\d+)`", re.IGNORECASE)
     regex_inc = re.compile(r"😡 Incomplètes\s*`(\d+)`", re.IGNORECASE)
@@ -438,7 +440,7 @@ class RouletteGame:
 
 active_games: Dict[int, List[RouletteGame]] = {}
 
-def spin_wheel():
+def spin_wheel() -> Tuple[int, str]:
     n = random.randint(0, 36)
     if n == 0:
         return n, "vert"
@@ -447,10 +449,10 @@ def spin_wheel():
 def color_for_embed(color: str) -> int:
     return COLOR_GREEN if color == "vert" else (COLOR_RED if color == "rouge" else COLOR_BLACK)
 
-def add_game(game: RouletteGame):
+def add_game(game: RouletteGame) -> None:
     active_games.setdefault(game.channel_id, []).append(game)
 
-def remove_game(game: RouletteGame):
+def remove_game(game: RouletteGame) -> None:
     lst = active_games.get(game.channel_id, [])
     if game in lst:
         lst.remove(game)
