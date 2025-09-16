@@ -547,4 +547,4 @@ async def graphic(ctx):
     await ctx.send(file=discord.File(fp=buf2, filename="defenses_valeurs.png"))
 
 
-bot.run
+client.run(os.getenv("DISCORD_TOKEN"))
