@@ -440,6 +440,7 @@ class RouletteGame:
     choice: Optional[str] = None  # "rouge" | "noir"
     lobby_msg_id: Optional[int] = None
     spin_msg_id: Optional[int] = None
+    lobby_task: Optional[asyncio.Task] = None 
 
 active_games: Dict[int, List[RouletteGame]] = {}
 
@@ -653,24 +654,15 @@ async def roulette_cmd(interaction: discord.Interaction, mise: Optional[int] = 0
     game.lobby_msg_id = sent.id
 
     # Timeout de lobby (5 minutes)
-    async def lobby_timeout():
+        async def lobby_timeout():
         await asyncio.sleep(300)
-        for g in list(active_games.get(channel_id, [])):
-            if g is game and g.joiner_id is None:
-                try:
-                    channel = interaction.channel
-                    msg = await channel.fetch_message(g.lobby_msg_id) if g.lobby_msg_id else None
-                    if msg:
-                        try:
-                            await msg.edit(view=None)
-                        except Exception:
-                            pass
-                    await channel.send(f"⏳ **Lobby expiré** (créé par <@{g.starter_id}>).")
-                except Exception:
-                    pass
-                remove_game(g)
-                break
-    bot.loop.create_task(lobby_timeout())
+        if game.joiner_id is None:
+            channel = interaction.channel
+            await channel.send(f"⏳ Lobby expiré (créé par <@{user_id}>).")
+            remove_game(game)
+
+    game.lobby_task = bot.loop.create_task(lobby_timeout())
+
 
 class CroupierView(discord.ui.View):
     def __init__(self, game: RouletteGame, *, timeout: float = 300.0):
