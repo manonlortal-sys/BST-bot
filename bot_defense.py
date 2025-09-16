@@ -10,6 +10,16 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 # --- Imports standard ---
 import io
 import threading
+import random
+import asyncio
+from dataclasses import dataclass
+from typing import Optional, Dict, List
+
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+from dotenv import load_dotenv
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -56,7 +66,43 @@ intents.guilds = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 occurences = defaultdict(int)
 
+load_dotenv()
+TOKEN = os.getenv("DISCORD_TOKEN")
 
+
+# --------- CONFIG visuelle ---------
+SPIN_GIF_URL = os.getenv("SPIN_GIF_URL", "https://media.tenor.com/e3QG3W1u3lAAAAAC/roulette-casino.gif") # ← remplace par ton GIF
+THUMB_URL = os.getenv("THUMB_URL", "") # logo casino/cartes, optionnel
+
+
+# Couleurs Embed
+COLOR_RED = 0xE74C3C
+COLOR_BLACK = 0x2C3E50
+COLOR_GREEN = 0x2ECC71
+COLOR_GOLD = 0xF1C40F
+
+
+# Numéros rouges (roulette européenne)
+RED_NUMBERS = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
+
+
+# --------- Intents ---------
+intents = discord.Intents.default()
+intents.guilds = True
+intents.message_content = False # uniquement slash
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+
+# --------- Modèle ---------
+@dataclass
+class RouletteGame:
+channel_id: int
+starter_id: int
+bet: int = 0
+joiner_id: Optional[int] = None
+choice: Optional[str] = None # "rouge" | "noir"
+lobby_msg_id: Optional[int] = None # message d'annonce / de choix
+bot.run(TOKEN)
 # =========================
 #  Aide: détection mention @Def / @Def2
 # =========================
