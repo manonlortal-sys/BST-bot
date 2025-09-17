@@ -594,8 +594,7 @@ async def launch_spin(interaction: discord.Interaction, game: RouletteGame):
        net_gain = payout_to_winner            # <- gagnant encaisse (2×mise - commission)
 net_loss = -game.bet                   # <- perdant perd sa mise
 await asyncio.to_thread(_upsert_net_and_wl, guild_id, winner, loser, net_gain, net_loss)
-
-        await asyncio.to_thread(_add_commission, guild_id, commission)
+await asyncio.to_thread(_add_commission, guild_id, commission)
 
     # Titre/emoji
     color_for_title = col if game.duel_type == "couleur" else ("vert" if n == 0 else ("rouge" if n in RED_NUMBERS else "noir"))
