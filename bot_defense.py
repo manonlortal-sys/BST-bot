@@ -1,7 +1,7 @@
 # =========================
-#  Bot Défense + Roulette – Discord
-#  (Render Web Service)
+#  Bot Défense + Roulette – Discord (Render Web Service)
 # =========================
+
 
 # --- Réglages pour Render/Matplotlib (headless) ---
 import os
@@ -143,13 +143,9 @@ class DuelSelectionView(discord.ui.View):
         embed = discord.Embed(
             title="🎲 Roulette – Lobby ouvert",
             description=(
-                f"Créateur : <@{self.game.starter_id}>
-"
-                f"🎮 Duel : **{duel_human_name(duel_type)}** ({labels})
-"
-                f"💵 Mise : **{self.game.bet}** kamas
-
-"
+                f"Créateur : <@{self.game.starter_id}>"
+                f"🎮 Duel : **{duel_human_name(duel_type)}** ({labels})"
+                f"💵 Mise : **{self.game.bet}** kamas"
                 f"➡️ Un joueur a **5 minutes** pour rejoindre ici avec **/roulette**."
             ),
             color=COLOR_GOLD
