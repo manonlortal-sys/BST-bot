@@ -22,6 +22,22 @@ from flask import Flask
 from dotenv import load_dotenv
 import discord.utils
 
+from openai import OpenAI
+Client = OpenAI()
+
+@bot.tree.command(name="ask", description="Pose une question au bot (mode ChatGPT)")
+@app_commands.describe(question="Ta question")
+async def ask_cmd(interaction: discord.Interaction, question: str):
+    await interaction.response.defer(thinking=True)
+    try:
+        resp = client.responses.create(
+            model="gpt-4o-mini",
+            input=[{"role": "user", "content": question}],
+        )
+        answer = resp.output_text
+    except Exception as e:
+        answer = f"Erreur côté IA : {e}"
+    await interaction.followup.send(answer[:1900])  # limite Discord
 # ---------- Mini serveur HTTP pour Render ----------
 app = Flask(__name__)
 
