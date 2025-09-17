@@ -140,18 +140,19 @@ class DuelSelectionView(discord.ui.View):
                 child.disabled = True
 
         labels = " / ".join(lbl for lbl, _ in DUEL_LABELS.get(duel_type, []))
-        embed = discord.Embed(
-            title="🎲 Roulette – Lobby ouvert",
-            description=(
-                f"Créateur : <@{self.game.starter_id}>"
-                f"🎮 Duel : **{duel_human_name(duel_type)}** ({labels})"
-                f"💵 Mise : **{self.game.bet}** kamas"
-                f"➡️ Un joueur a **5 minutes** pour rejoindre ici avec **/roulette**."
-            ),
-            color=COLOR_GOLD
-        )
-        if THUMB_URL: embed.set_thumbnail(url=THUMB_URL)
-        await interaction.response.edit_message(embed=embed, view=self)
+embed = discord.Embed(
+    title="🎲 Roulette – Lobby ouvert",
+    description=f"""Créateur : <@{self.game.starter_id}>
+🎮 Duel : **{duel_human_name(duel_type)}** ({labels})
+💵 Mise : **{self.game.bet}** kamas
+
+➡️ Un joueur a **5 minutes** pour rejoindre ici avec **/roulette**.""",
+    color=COLOR_GOLD
+)
+if THUMB_URL:
+    embed.set_thumbnail(url=THUMB_URL)
+await interaction.response.edit_message(embed=embed, view=self)
+
 
         # Démarre le timeout de lobby (5 min pour qu'un joueur rejoigne)
         channel = interaction.channel
