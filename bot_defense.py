@@ -1,5 +1,5 @@
 # =========================
-#  Roulette à 2 joueurs – Discord (Render Web Service)
+#  Roulette à 2 joueurs – Discord (Render Web Service) + Leaderboard
 # =========================
 
 import os
@@ -8,6 +8,7 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 import asyncio
 import random
 import threading
+import sqlite3
 from dataclasses import dataclass
 from typing import Optional, Dict, List
 
@@ -16,6 +17,7 @@ from discord import app_commands
 from discord.ext import commands
 from flask import Flask
 from dotenv import load_dotenv
+import discord.utils
 
 # ---------- Mini serveur HTTP pour Render ----------
 app = Flask(__name__)
@@ -42,6 +44,8 @@ THUMB_URL    = os.getenv("THUMB_URL", "")
 CROUPIER_ROLE_ID   = int(os.getenv("CROUPIER_ROLE_ID", "0")) or None
 CROUPIER_ROLE_NAME = os.getenv("CROUPIER_ROLE_NAME", "CROUPIER")
 
+DB_PATH = os.getenv("DB_PATH", "roulette_stats.db")
+
 COLOR_RED   = 0xE74C3C
 COLOR_BLACK = 0x2C3E50
 COLOR_GREEN = 0x2ECC71
@@ -49,11 +53,85 @@ COLOR_GOLD  = 0xF1C40F
 
 RED_NUMBERS = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
 
+print("SPIN_GIF_URL =", SPIN_GIF_URL)  # debug pratique dans les logs
+print("DB_PATH =", DB_PATH)
+
 intents = discord.Intents.default()
 intents.guilds = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ---------- Modèle & utils ----------
+# ---------- DB utils (synchrones, appelés via to_thread) ----------
+_db_lock = threading.Lock()
+
+def db_init():
+    with _db_lock:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_stats(
+                    user_id   INTEGER PRIMARY KEY,
+                    total_bet INTEGER NOT NULL DEFAULT 0,
+                    net       INTEGER NOT NULL DEFAULT 0
+                )
+            """)
+            conn.commit()
+        finally:
+            conn.close()
+
+def _upsert_bet(user_id: int, bet: int):
+    with _db_lock:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            conn.execute("""
+                INSERT INTO user_stats(user_id, total_bet, net)
+                VALUES (?, ?, 0)
+                ON CONFLICT(user_id) DO UPDATE
+                SET total_bet = total_bet + excluded.total_bet
+            """, (user_id, bet))
+            conn.commit()
+        finally:
+            conn.close()
+
+def _upsert_net(user_id: int, delta: int):
+    with _db_lock:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            conn.execute("""
+                INSERT INTO user_stats(user_id, total_bet, net)
+                VALUES (?, 0, ?)
+                ON CONFLICT(user_id) DO UPDATE
+                SET net = net + excluded.net
+            """, (user_id, delta))
+            conn.commit()
+        finally:
+            conn.close()
+
+def _get_leaderboard(limit: int = 10):
+    with _db_lock:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            cur = conn.execute("""
+                SELECT user_id, total_bet, net
+                FROM user_stats
+                ORDER BY total_bet DESC, user_id ASC
+                LIMIT ?
+            """, (limit,))
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+    return rows
+
+def _get_total_bet_all():
+    with _db_lock:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            cur = conn.execute("SELECT COALESCE(SUM(total_bet), 0) FROM user_stats")
+            total, = cur.fetchone()
+        finally:
+            conn.close()
+    return int(total or 0)
+
+# ---------- Modèle & utils Roulette ----------
 @dataclass
 class RouletteGame:
     channel_id: int
@@ -78,7 +156,6 @@ DUEL_LABELS: Dict[str, List[tuple[str, str]]] = {
 }
 
 def duel_human_name(mode: str) -> str:
-    # Libellés “humains” en minuscules
     return {
         "couleur":    "rouge/noir",
         "parité":     "pair/impair",
@@ -100,7 +177,7 @@ def result_label(mode: str, n: int) -> Optional[str]:
             return None
         return "rouge" if n in RED_NUMBERS else "noir"
     if mode == "parité":
-        return "pair" if n % 2 == 0 else "impair"  # fun: 0 = pair
+        return "pair" if n % 2 == 0 else "impair"  # ici 0 = pair (choix “fun”)
     if mode == "intervalle":
         if 1 <= n <= 18:
             return "1-18"
@@ -121,6 +198,22 @@ def opposite_choice(mode: str, choice: str) -> str:
     return mapping.get((mode, choice), "?")
 
 active_games: Dict[int, List[RouletteGame]] = {}
+
+def resolve_croupier_mention(guild: discord.Guild) -> tuple[str, discord.AllowedMentions]:
+    """Retourne (mention, allowed_mentions) pour garantir le ping du rôle CROUPIER."""
+    allowed = discord.AllowedMentions(roles=True, users=False, everyone=False, replied_user=False)
+    role_mention = None
+    if CROUPIER_ROLE_ID:
+        r = guild.get_role(CROUPIER_ROLE_ID)
+        if r:
+            role_mention = r.mention
+    if not role_mention and CROUPIER_ROLE_NAME:
+        r = discord.utils.get(guild.roles, name=CROUPIER_ROLE_NAME)
+        if r:
+            role_mention = r.mention
+    if not role_mention:
+        role_mention = f"@{CROUPIER_ROLE_NAME}"
+    return role_mention, allowed
 
 # ---------- Vues (UI) ----------
 class DuelSelectionView(discord.ui.View):
@@ -202,6 +295,7 @@ class CampSelectionView(discord.ui.View):
             f"🎮 Duel : **{duel_human_name(self.game.duel_type or '')}**\n"
             f"🧭 Camp créateur : **{starter_choice}** (l'autre joueur sera **{opp}**)\n"
             f"💵 Mise : **{self.game.bet}** kamas\n\n"
+            "➡️ **Tape `/roulette` dans ce salon pour rejoindre la partie.**\n"
             "🕐 En attente d'un second joueur"
         )
         embed = discord.Embed(title="🎲 Lobby ouvert", description=base_desc + "...", color=COLOR_GOLD)
@@ -225,6 +319,7 @@ class CampSelectionView(discord.ui.View):
                         f"🎮 Duel : **{duel_human_name(self.game.duel_type or '')}**\n"
                         f"🧭 Camp créateur : **{starter_choice}** (l'autre joueur sera **{opp}**)\n"
                         f"💵 Mise : **{self.game.bet}** kamas\n\n"
+                        "➡️ **Tape `/roulette` dans ce salon pour rejoindre la partie.**\n"
                         f"🕐 En attente d'un second joueur{trail}"
                     )
                     await msg.edit(embed=embed)
@@ -291,11 +386,15 @@ class CroupierView(discord.ui.View):
             view=None
         )
 
-# ---------- Spin ----------
+# ---------- Spin + enregistrement des stats ----------
 async def launch_spin(interaction: discord.Interaction, game: RouletteGame):
     # Stop animation si elle tourne encore
     if game.wait_anim_task and not game.wait_anim_task.done():
         game.wait_anim_task.cancel()
+
+    # Enregistre les mises des deux joueurs (total_bet) — avant de lancer le spin
+    await asyncio.to_thread(_upsert_bet, game.starter_id, game.bet)
+    await asyncio.to_thread(_upsert_bet, game.joiner_id, game.bet)
 
     base = (
         f"🎮 Duel : **{duel_human_name(game.duel_type or '')}**\n"
@@ -336,6 +435,11 @@ async def launch_spin(interaction: discord.Interaction, game: RouletteGame):
         winner, loser = game.joiner_id, game.starter_id
     else:
         winner = loser = None
+
+    # Enregistre le net (gains/pertes) si applicable
+    if winner is not None and loser is not None:
+        await asyncio.to_thread(_upsert_net, winner, +game.bet)
+        await asyncio.to_thread(_upsert_net, loser,  -game.bet)
 
     color_for_title = col if game.duel_type == "couleur" else ("vert" if n == 0 else ("rouge" if n in RED_NUMBERS else "noir"))
     color_emoji = "🔴" if color_for_title == "rouge" else ("⚫" if color_for_title == "noir" else "🟢" if n == 0 else "")
@@ -417,9 +521,8 @@ async def roulette_cmd(interaction: discord.Interaction, mise: Optional[int] = N
         except Exception:
             pass
 
-        mention = f"<@&{CROUPIER_ROLE_ID}>" if CROUPIER_ROLE_ID else f"**{CROUPIER_ROLE_NAME}**"
+        mention_text, allowed = resolve_croupier_mention(interaction.guild)
         desc = (
-            f"{mention} — merci de **valider les mises**.\n\n"
             f"🎮 Duel : **{duel_human_name(game.duel_type or '')}**\n"
             f"👥 <@{game.starter_id}> → **{game.starter_choice}**  vs  <@{game.joiner_id}> → **{game.choice_joiner}**\n"
             f"💵 Mise : **{game.bet}** kamas (par joueur)\n"
@@ -428,7 +531,12 @@ async def roulette_cmd(interaction: discord.Interaction, mise: Optional[int] = N
         if THUMB_URL:
             embed.set_thumbnail(url=THUMB_URL)
 
-        await interaction.followup.send(embed=embed, view=CroupierView(game))
+        await interaction.followup.send(
+            content=mention_text,  # ping rôle ici
+            embed=embed,
+            view=CroupierView(game),
+            allowed_mentions=allowed
+        )
         return
 
     # 2) Un lobby existe mais le créateur n’a pas encore choisi duel/camp
@@ -476,9 +584,40 @@ async def roulette_cmd(interaction: discord.Interaction, mise: Optional[int] = N
 
     bot.loop.create_task(duel_timeout())
 
+# ---------- Slash /leaderboard ----------
+@bot.tree.command(name="leaderboard", description="Classement : total misé et gains/pertes")
+@app_commands.describe(top="Nombre de joueurs à afficher (par défaut 10)")
+async def leaderboard_cmd(interaction: discord.Interaction, top: Optional[int] = 10):
+    if top is None or top <= 0:
+        top = 10
+    # Récupère données en thread pour ne pas bloquer l'event loop
+    rows = await asyncio.to_thread(_get_leaderboard, min(top, 25))
+    total_all = await asyncio.to_thread(_get_total_bet_all)
+
+    if not rows:
+        return await interaction.response.send_message(
+            "Aucune donnée pour l’instant. Lancez une partie avec **/roulette** ✨",
+            ephemeral=True
+        )
+
+    # Mise en forme
+    lines = []
+    for i, (uid, total_bet, net) in enumerate(rows, start=1):
+        sign = "＋" if net > 0 else ("－" if net < 0 else "±")
+        lines.append(f"**{i}.** <@{uid}> — **{total_bet}** kamas | {sign} {abs(net)}")
+
+    embed = discord.Embed(
+        title="🏆 Leaderboard Roulette",
+        description="\n".join(lines),
+        color=COLOR_GOLD
+    )
+    embed.add_field(name="💰 Total misé (tous joueurs)", value=f"**{total_all}** kamas", inline=False)
+    await interaction.response.send_message(embed=embed)
+
 # ---------- Démarrage ----------
 @bot.event
 async def on_ready():
+    db_init()
     try:
         await bot.tree.sync()
     except Exception as e:
