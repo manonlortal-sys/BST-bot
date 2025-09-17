@@ -214,8 +214,7 @@ def slots_compute_payout(grid, bet_per_line: int, lines: int):
 
 def slots_render_grid(grid):
     rows = [f"| {grid[r][0]} | {grid[r][1]} | {grid[r][2]} |" for r in range(3)]
-    return "```
-" + "\n".join(rows) + "\n```"
+    return "```\n" + "\n".join(rows) + "\n```"
 
 def slots_frames(final_grid, frames: int):
     colA = [ _wchoice() for _ in range(3) ]
