@@ -44,6 +44,37 @@ ROLE_CROUPIER_ID = int(os.getenv("ROLE_CROUPIER_ID", "0") or 0)  # rôle qui val
 SPIN_GIF_URL = os.getenv("SPIN_GIF_URL", "")  # gif optionnel pour roulette
 LEADERBOARD_CHANNEL_ID = int(os.getenv("LEADERBOARD_CHANNEL_ID","0") or 0)  # optionnel (si tu veux poster périodiquement)
 
+# --- Mode ChatGPT (OpenAI) ---
+from openai import OpenAI
+
+# Assure-toi que load_dotenv() a été appelé avant
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Ne pas écraser la classe OpenAI (nom en minuscules) + garde-fou si clé absente
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+@bot.tree.command(name="ask", description="Pose une question au bot (mode ChatGPT, répond en FR)")
+@app_commands.describe(question="Ta question")
+async def ask_cmd(interaction: discord.Interaction, question: str):
+    if client is None:
+        return await interaction.response.send_message(
+            "⚠️ Mode ChatGPT indisponible : clé API manquante (`OPENAI_API_KEY`).",
+            ephemeral=True
+        )
+
+    await interaction.response.defer(thinking=True)
+    try:
+        resp = client.responses.create(
+            model="gpt-4o-mini",
+            input=[
+                {"role": "system", "content": "Tu es un assistant Discord et tu réponds toujours en français, de façon claire et concise."},
+                {"role": "user", "content": question},
+            ],
+        )
+        await interaction.followup.send(resp.output_text[:1900])
+    except Exception as e:
+        await interaction.followup.send(f"Erreur côté IA : {e}")
+
 # Slots config
 def _as_pos_int(name: str, default: int) -> int:
     try: val = int(os.getenv(name, default))
