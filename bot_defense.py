@@ -591,9 +591,10 @@ async def launch_spin(interaction: discord.Interaction, game: RouletteGame):
     # net gagnant = (payout - sa mise) = (2*bet - commission - bet) = bet - commission
     # net perdant = - bet
     if winner is not None and loser is not None:
-        net_gain = payout_to_winner - game.bet
-        net_loss = -game.bet
-        await asyncio.to_thread(_upsert_net_and_wl, guild_id, winner, loser, net_gain, net_loss)
+       net_gain = payout_to_winner            # <- gagnant encaisse (2×mise - commission)
+net_loss = -game.bet                   # <- perdant perd sa mise
+await asyncio.to_thread(_upsert_net_and_wl, guild_id, winner, loser, net_gain, net_loss)
+
         await asyncio.to_thread(_add_commission, guild_id, commission)
 
     # Titre/emoji
