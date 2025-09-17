@@ -1,28 +1,18 @@
-# =========================
-#  Bot Défense + Roulette – Discord (Render Web Service)
-# =========================
-
-# --- Réglages pour Render/Matplotlib (headless) ---
+# --- Render/Matplotlib (headless) ---
 import os
 os.environ.setdefault("MPLBACKEND", "Agg")
 
-# --- Imports standard ---
-import io
-import threading
-import random
+# --- Imports ---
 import asyncio
+import random
+import threading
 from dataclasses import dataclass
 from typing import Optional, Dict, List
-from collections import defaultdict
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 
-# --- Discord, Flask, Matplotlib, dotenv ---
 import discord
 from discord import app_commands
 from discord.ext import commands
 from flask import Flask
-import matplotlib.pyplot as plt
 from dotenv import load_dotenv
 
 # =========================
@@ -32,7 +22,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Bot Discord actif"
+    return "Roulette bot actif"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -41,36 +31,19 @@ def run_flask():
 threading.Thread(target=run_flask, daemon=True).start()
 
 # =========================
-#  Config générale
+#  Config
 # =========================
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
-    raise SystemExit("DISCORD_TOKEN manquant dans les variables d'environnement")
+    raise SystemExit("DISCORD_TOKEN manquant")
 
-CHANNEL_ID = int(os.getenv("DEF_CHANNEL_ID", "1327548733398843413"))  # canal pour les stats défense
-LOCAL_TZ = os.getenv("LOCAL_TZ", "Europe/Paris")
+# Visuel
+SPIN_GIF_URL = os.getenv("SPIN_GIF_URL", "https://media.tenor.com/e3QG3W1u3lAAAAAC/roulette-casino.gif")
+THUMB_URL    = os.getenv("THUMB_URL", "")
 
-# Intents (préfixe "!" -> message_content True)
-intents = discord.Intents.default()
-intents.guilds = True
-intents.messages = True
-intents.reactions = True
-intents.message_content = True
-
-bot = commands.Bot(command_prefix="!", intents=intents)
-
-# =========================
-#  Config visuelle Roulette
-# =========================
-SPIN_GIF_URL = os.getenv(
-    "SPIN_GIF_URL",
-    "https://media.tenor.com/e3QG3W1u3lAAAAAC/roulette-casino.gif"
-)
-THUMB_URL = os.getenv("THUMB_URL", "")  # optionnel: logo
-
-# Ping du croupier
-CROUPIER_ROLE_ID = int(os.getenv("CROUPIER_ROLE_ID", "0")) or None
+# Croupier
+CROUPIER_ROLE_ID   = int(os.getenv("CROUPIER_ROLE_ID", "0")) or None
 CROUPIER_ROLE_NAME = os.getenv("CROUPIER_ROLE_NAME", "CROUPIER")
 
 # Couleurs
@@ -79,11 +52,16 @@ COLOR_BLACK = 0x2C3E50
 COLOR_GREEN = 0x2ECC71
 COLOR_GOLD  = 0xF1C40F
 
-# Numéros rouges roulette (européenne)
+# Roulette (numéros rouges)
 RED_NUMBERS = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
 
+# Intents (slash + boutons n'ont pas besoin de message_content)
+intents = discord.Intents.default()
+intents.guilds = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+
 # =========================
-#  Roulette – Modèle et utilitaires
+#  Modèle & utils
 # =========================
 @dataclass
 class RouletteGame:
@@ -127,7 +105,7 @@ def result_label(mode: str, n: int) -> Optional[str]:
             return None
         return "rouge" if n in RED_NUMBERS else "noir"
     if mode == "parité":
-        # 0 est pair ici -> avantage parité, mais ça reste fun-mode
+        # 0 est pair ici (fun mode)
         return "pair" if n % 2 == 0 else "impair"
     if mode == "intervalle":
         if 1 <= n <= 18:
@@ -140,10 +118,10 @@ def result_label(mode: str, n: int) -> Optional[str]:
 active_games: Dict[int, List[RouletteGame]] = {}
 
 # =========================
-#  Roulette – Vues (UI)
+#  Vues (UI)
 # =========================
 class DuelSelectionView(discord.ui.View):
-    """Le créateur choisit le type de duel via 3 boutons."""
+    """Le créateur choisit le type de duel via 3 boutons (Couleur / Parité / Intervalle)."""
     def __init__(self, game: RouletteGame, *, timeout: float = 300.0):
         super().__init__(timeout=timeout)
         self.game = game
@@ -326,7 +304,7 @@ async def launch_spin(interaction: discord.Interaction, game: RouletteGame):
             break
     await asyncio.sleep(1)
 
-    # Tire jusqu'à 3 fois pour éviter 0 en "couleur" (sinon neutre)
+    # Tirages (évite 0 en "couleur" en retentant jusqu'à 3 fois)
     attempts = 0
     while True:
         attempts += 1
@@ -335,7 +313,7 @@ async def launch_spin(interaction: discord.Interaction, game: RouletteGame):
         if res is not None or attempts >= 3:
             break
 
-    # Déduit le camp du créateur (opposé du choix du joiner)
+    # Camp du créateur (opposé du choix joiner)
     starter_choice = {
         ("couleur","rouge"): "noir",
         ("couleur","noir"): "rouge",
@@ -386,11 +364,14 @@ async def launch_spin(interaction: discord.Interaction, game: RouletteGame):
         pass
 
 # =========================
-#  Slash command /roulette (duel via boutons)
+#  Slash command /roulette
 # =========================
 @bot.tree.command(name="roulette", description="Créer/Rejoindre une roulette (mise en kamas)")
 @app_commands.describe(mise="Montant à miser (créateur uniquement)")
 async def roulette_cmd(interaction: discord.Interaction, mise: Optional[int] = None):
+    # Important: ack immédiat pour éviter 10062 Unknown interaction
+    await interaction.response.defer(thinking=False)
+
     channel_id = interaction.channel_id
     user_id = interaction.user.id
 
@@ -413,19 +394,18 @@ async def roulette_cmd(interaction: discord.Interaction, mise: Optional[int] = N
             color=COLOR_GOLD
         )
         if THUMB_URL: embed.set_thumbnail(url=THUMB_URL)
-        await interaction.response.send_message(embed=embed, view=SideChoiceView(game))
-        sent = await interaction.original_response()
+        sent = await interaction.followup.send(embed=embed, view=SideChoiceView(game))
         game.lobby_msg_id = sent.id
         return
 
-    # 2) Un lobby existe mais le duel n'est pas encore choisi (attendre)
+    # 2) Un lobby existe mais duel non encore choisi
     open_unset = [g for g in active_games.get(channel_id, []) if g.joiner_id is None and g.duel_type is None and g.starter_id != user_id]
     if open_unset:
-        return await interaction.response.send_message("⏳ Le créateur est en train de choisir le **type de duel**… Réessaie dans quelques secondes.", ephemeral=True)
+        return await interaction.followup.send("⏳ Le créateur choisit le **type de duel**… Réessaie dans quelques secondes.")
 
     # 3) Créer un lobby (créateur)
     if mise is None or mise <= 0:
-        return await interaction.response.send_message("Indique une **mise positive** pour créer la partie (ex: /roulette mise:100).", ephemeral=True)
+        return await interaction.followup.send("Indique une **mise positive** pour créer la partie (ex: /roulette mise:100).")
 
     game = RouletteGame(channel_id=channel_id, starter_id=user_id, bet=mise, duel_type=None)
     active_games.setdefault(channel_id, []).append(game)
@@ -441,9 +421,7 @@ Choisis ci-dessous : **Couleur**, **Pair/Impair**, ou **1–18 / 19–36**.
     )
     if THUMB_URL: embed.set_thumbnail(url=THUMB_URL)
 
-    view = DuelSelectionView(game)
-    await interaction.response.send_message(embed=embed, view=view)
-    sent = await interaction.original_response()
+    sent = await interaction.followup.send(embed=embed, view=DuelSelectionView(game))
     game.lobby_msg_id = sent.id
 
     # Timeout si le créateur ne choisit pas de duel dans les 5 min
@@ -460,6 +438,17 @@ Choisis ci-dessous : **Couleur**, **Pair/Impair**, ou **1–18 / 19–36**.
                 pass
 
     bot.loop.create_task(duel_timeout())
+
+# =========================
+#  Démarrage / Sync
+# =========================
+@bot.event
+async def on_ready():
+    try:
+        await bot.tree.sync()
+    except Exception as e:
+        print("Sync error:", e)
+    print(f"Connecté en tant que {bot.user} (ID: {bot.user.id})")
 
 # =========================
 #  Fonctions Défense (tes anciennes commandes)
