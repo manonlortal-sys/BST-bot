@@ -773,60 +773,53 @@ async def leaderboard_cmd(interaction: discord.Interaction, top: Optional[int] =
     await interaction.response.send_message(embed=embed)
 
 # ===============================
-#  PATCH SLOTS – à coller dans ton bot (même fichier)
-#  /slots : machine à sous 3x3, 5 lignes, animation emoji
-#  Intégration leaderboard serveur :
-#   - total_misé += mise_totale à chaque spin
-#   - net += (payout - mise_totale)
-#  Dépendances attendues dans ton fichier :
-#   - objet global: `bot`
-#   - helpers DB: _upsert_bet(guild_id, user_id, amount), _upsert_net_and_wl(guild_id, win_uid, lose_uid, net_gain, net_loss)
-#   - helper UI: update_leaderboard_message(guild)
-#   - util: fmt_kamas(n)
+#  SLOTS – 3x3, 5 lignes, animation emoji (version corrigée)
 # ===============================
 
 import asyncio
-import random
 import secrets
-from typing import List, Tuple, Dict
+from typing import List, Tuple
 import discord
 from discord import app_commands
 
-# ---------- CONFIG ----------
-SLOTS_MIN_BET = int(globals().get('SLOTS_MIN_BET', 100))      # montant par ligne min
-SLOTS_MAX_BET = int(globals().get('SLOTS_MAX_BET', 100_000))  # montant par ligne max
-SLOTS_DEFAULT_BET = int(globals().get('SLOTS_DEFAULT_BET', 100))
-SLOTS_DEFAULT_LINES = int(globals().get('SLOTS_DEFAULT_LINES', 5))  # 1 ou 5
-SLOTS_ANIM_FRAMES = 8   # total de frames d'animation
-SLOTS_ANIM_DELAY = 0.15 # secondes entre frames (~1.2s total)
+# ---------- CONFIG & sanitation ----------
 
-# Symboles & poids (plus le poids est grand, plus le symbole est fréquent)
+def _as_pos_int(name: str, default: int) -> int:
+    try:
+        val = int(globals().get(name, default))
+    except Exception:
+        val = default
+    return max(1, val)
+
+SLOTS_MIN_BET = _as_pos_int('SLOTS_MIN_BET', 100)              # min par ligne
+SLOTS_MAX_BET = max(SLOTS_MIN_BET, _as_pos_int('SLOTS_MAX_BET', 100_000))
+SLOTS_DEFAULT_BET = min(max(SLOTS_MIN_BET, _as_pos_int('SLOTS_DEFAULT_BET', 100)), SLOTS_MAX_BET)
+SLOTS_DEFAULT_LINES = 5 if str(globals().get('SLOTS_DEFAULT_LINES', 5)) == '5' else 1
+
+SLOTS_ANIM_FRAMES = 8
+SLOTS_ANIM_DELAY = 0.15
+
 SYMBOLS = ["7️⃣", "⭐", "🔔", "🍇", "🍋", "🍒"]
-WEIGHTS = [1,    2,    3,    4,    5,    6   ]
-# Paytable (3 identiques sur une ligne)
+WEIGHTS = [1,     2,    3,    4,    5,    6 ]
 PAYOUTS = {
     "7️⃣": 50,
-    "⭐": 25,
-    "🔔": 10,
-    "🍇": 5,
-    "🍋": 3,
-    "🍒": 2,
+    "⭐":  25,
+    "🔔":  10,
+    "🍇":   5,
+    "🍋":   3,
+    "🍒":   2,
 }
-
-# Lignes gagnantes (index (row, col) pour 3 cases)
 WIN_LINES = [
-    [(0,0),(0,1),(0,2)],
-    [(1,0),(1,1),(1,2)],
-    [(2,0),(2,1),(2,2)],
-    [(0,0),(1,1),(2,2)],
-    [(0,2),(1,1),(2,0)],
+    [(0,0),(0,1),(0,2)],  # L1
+    [(1,0),(1,1),(1,2)],  # L2
+    [(2,0),(2,1),(2,2)],  # L3
+    [(0,0),(1,1),(2,2)],  # D1
+    [(0,2),(1,1),(2,0)],  # D2
 ]
 
-# ---------- RNG pondérée ----------
 _system_rng = secrets.SystemRandom()
 
 def weighted_choice() -> str:
-    # tire selon WEIGHTS
     total = sum(WEIGHTS)
     r = _system_rng.randrange(total)
     acc = 0
@@ -836,69 +829,50 @@ def weighted_choice() -> str:
             return sym
     return SYMBOLS[-1]
 
-# ---------- Génération de grille & calcul gains ----------
-
 def generate_final_grid() -> List[List[str]]:
     return [[weighted_choice() for _ in range(3)] for _ in range(3)]
 
-
-def compute_payout(grid: List[List[str]], bet_per_line: int, lines: int) -> Tuple[int, List[Tuple[int,str,int]]]:
-    """Retourne (payout_total, details)
-       details: list[(index_ligne, symbole, multiplicateur)] pour chaque ligne gagnante.
-       Si lines==1 on ne paie que la ligne centrale (index 1); si 5 on paie toutes.
-    """
-    active_lines = [1] if lines == 1 else list(range(5))
+def compute_payout(grid: List[List[str]], bet_per_line: int, lines: int) -> tuple[int, list[tuple[int,str,int]]]:
+    active = [1] if lines == 1 else list(range(5))
     total = 0
-    details = []
-    for i in active_lines:
+    details: list[tuple[int,str,int]] = []
+    for i in active:
         (r1,c1),(r2,c2),(r3,c3) = WIN_LINES[i]
         s1,s2,s3 = grid[r1][c1], grid[r2][c2], grid[r3][c3]
         if s1 == s2 == s3:
             mult = PAYOUTS.get(s1, 0)
-            if mult > 0:
+            if mult:
                 win = bet_per_line * mult
                 total += win
                 details.append((i, s1, mult))
     return total, details
 
-# ---------- Rendu texte & animation ----------
-
 def render_grid(grid: List[List[str]]) -> str:
-    # Bloc monospace pour aligner; pas de gras dans code block → on indique les lignes gagnantes à part
     rows = [f"| {grid[r][0]} | {grid[r][1]} | {grid[r][2]} |" for r in range(3)]
-    return "````\n" + "\n".join(rows) + "\n````"
-
+    return "```\n" + "\n".join(rows) + "\n```"
 
 def make_spin_frames(final_grid: List[List[str]], frames: int = SLOTS_ANIM_FRAMES) -> List[List[List[str]]]:
-    """Construit une liste de grilles (frames) qui simulent les colonnes qui tournent
-       jusqu'à se figer à gauche→droite sur le résultat final.
-    """
-    # colonnes initiales aléatoires
     colA = [weighted_choice() for _ in range(3)]
     colB = [weighted_choice() for _ in range(3)]
     colC = [weighted_choice() for _ in range(3)]
-
-    out = []
+    out: List[List[List[str]]] = []
     for i in range(frames):
-        # pour chaque frame, on fait "tourner" les colonnes non figées
-        # figer A dès frame ~frames*0.4, B à ~0.7, C seulement à la fin
         freeze_A = (i >= int(frames*0.4))
         freeze_B = (i >= int(frames*0.7))
         g = [[None,None,None] for _ in range(3)]
-        # Col A
+        # A
         if freeze_A:
             for r in range(3): g[r][0] = final_grid[r][0]
         else:
             colA = colA[1:] + [weighted_choice()]
             for r in range(3): g[r][0] = colA[r]
-        # Col B
+        # B
         if freeze_B:
             for r in range(3): g[r][1] = final_grid[r][1]
         else:
             colB = colB[1:] + [weighted_choice()]
             for r in range(3): g[r][1] = colB[r]
-        # Col C
-        # figée uniquement à la dernière frame
+        # C (ne se fige qu'à la dernière frame)
         if i == frames-1:
             for r in range(3): g[r][2] = final_grid[r][2]
         else:
@@ -907,13 +881,51 @@ def make_spin_frames(final_grid: List[List[str]], frames: int = SLOTS_ANIM_FRAME
         out.append(g)
     return out
 
-# ---------- Vue UI ----------
+def build_slots_embed(bet_per_line: int, lines: int, grid: List[List[str]]|None, details, footer_note: str|None):
+    bet_per_line = min(max(SLOTS_MIN_BET, int(bet_per_line)), SLOTS_MAX_BET)
+    lines = 5 if lines == 5 else 1
+    total_bet = bet_per_line * lines
+
+    title = "🎰 **Machine à sous** — 3×3 / 5 lignes"
+    desc_top = [
+        f"💵 **Mise/ligne** : `{fmt_kamas(bet_per_line)}` kamas",
+        f"🔢 **Lignes actives** : `{lines}`",
+        f"📦 **Mise totale** : `{fmt_kamas(total_bet)}` kamas",
+    ]
+
+    # ➜ AFFICHAGE DÈS L’OUVERTURE : si pas de grille fournie, on affiche une grille aléatoire décorative
+    if grid is None:
+        grid = generate_final_grid()
+
+    grid_block = render_grid(grid)
+    desc = "\n".join(desc_top) + "\n\n" + grid_block
+
+    if details is not None:
+        if details:
+            lines_txt = []
+            for idx, sym, mult in details:
+                label = ["L1","L2","L3","D1","D2"][idx]
+                lines_txt.append(f"🔥 **{label}** — {sym}{sym}{sym} ×{mult}")
+            total_win = sum(bet_per_line * mult for _,_,mult in details)
+            desc += "\n" + "\n".join(lines_txt)
+            desc += "\n" + f"**Gain total** : `{fmt_kamas(total_win)}` kamas"
+        else:
+            desc += "\n**Pas de ligne gagnante.** 😿"
+
+    embed = discord.Embed(title=title, description=desc, color=0x8E44AD)
+    if footer_note:
+        embed.set_footer(text=footer_note)
+    else:
+        embed.set_footer(text="Ajuste la mise / lignes puis clique SPIN !")
+    return embed
+
 class SlotsView(discord.ui.View):
     def __init__(self, user_id: int, *, bet_per_line: int, lines: int):
         super().__init__(timeout=120)
         self.user_id = user_id
-        self.bet_per_line = bet_per_line
-        self.lines = lines
+        # clamp initial
+        self.bet_per_line = min(max(SLOTS_MIN_BET, int(bet_per_line)), SLOTS_MAX_BET)
+        self.lines = 5 if lines == 5 else 1
         self.spin_lock = False
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -922,7 +934,6 @@ class SlotsView(discord.ui.View):
             return False
         return True
 
-    # Contrôles de mise
     @discord.ui.button(label="-1k", style=discord.ButtonStyle.secondary)
     async def btn_m_minus_1k(self, inter: discord.Interaction, _):
         self.bet_per_line = max(SLOTS_MIN_BET, self.bet_per_line - 1000)
@@ -967,43 +978,51 @@ class SlotsView(discord.ui.View):
             await msg.edit(embed=embed, view=self)
 
     async def do_spin(self, inter: discord.Interaction):
-        # 1) Verrou UI
+        # Désactive les boutons pendant le spin
         for child in self.children:
             child.disabled = True
+
         try:
-            # 2) Montants
-            bet_per_line = self.bet_per_line
-            lines = self.lines
+            # Double sécurité côté valeurs
+            bet_per_line = min(max(SLOTS_MIN_BET, int(self.bet_per_line)), SLOTS_MAX_BET)
+            lines = 5 if self.lines == 5 else 1
             total_bet = bet_per_line * lines
-            # 3) Enregistrer total misé
+            if total_bet <= 0:
+                return await inter.response.send_message("Mise invalide.", ephemeral=True)
+
+            # Enregistrer total misé
             await asyncio.to_thread(_upsert_bet, inter.guild.id, inter.user.id, total_bet)
-            # 4) Calculer résultat final & gains
+
+            # Calculer résultat
             final_grid = generate_final_grid()
             payout, details = compute_payout(final_grid, bet_per_line, lines)
             net = payout - total_bet
-            # 5) Animation
+
+            # Animation
             frames = make_spin_frames(final_grid)
-            # premier rendu "spinning"
             spinning_embed = build_slots_embed(bet_per_line, lines, None, None, "\n\n⏳ *La machine tourne…*")
             try:
                 await inter.response.edit_message(embed=spinning_embed, view=self)
             except discord.InteractionResponded:
                 msg0 = await inter.original_response()
                 await msg0.edit(embed=spinning_embed, view=self)
+
             msg = await inter.original_response()
             for g in frames:
                 await asyncio.sleep(SLOTS_ANIM_DELAY)
                 await msg.edit(embed=build_slots_embed(bet_per_line, lines, g, None, None), view=self)
-            # 6) Afficher résultat & mise à jour net
-            # MAJ net côté leaderboard (delta unique)
+
+            # Leaderboard: net (perte en positif dans le champ 'loss')
             if net > 0:
                 await asyncio.to_thread(_upsert_net_and_wl, inter.guild.id, inter.user.id, inter.user.id, net, 0)
             elif net < 0:
-                await asyncio.to_thread(_upsert_net_and_wl, inter.guild.id, inter.user.id, inter.user.id, 0, net)
-            # 7) Final: grille finale + breakdown
+                await asyncio.to_thread(_upsert_net_and_wl, inter.guild.id, inter.user.id, inter.user.id, 0, -net)
+
+            # Résultat final
             final_embed = build_slots_embed(bet_per_line, lines, final_grid, details, None)
             await msg.edit(embed=final_embed, view=self)
-            # 8) Leaderboard
+
+            # MAJ leaderboard
             try:
                 await update_leaderboard_message(inter.guild)
             except Exception as e:
@@ -1016,47 +1035,14 @@ class SlotsView(discord.ui.View):
             except Exception:
                 pass
 
-# ---------- Embed helper ----------
-
-def build_slots_embed(bet_per_line: int, lines: int, grid: List[List[str]]|None, details, footer_note: str|None):
-    title = "🎰 **Machine à sous** — 3×3 / 5 lignes"
-    total_bet = bet_per_line * lines
-    desc_top = [
-        f"💵 **Mise/ligne** : `{fmt_kamas(bet_per_line)}` kamas",
-        f"🔢 **Lignes** : `{lines}`",
-        f"📦 **Mise totale** : `{fmt_kamas(total_bet)}` kamas",
-    ]
-    if grid is None:
-        # placeholder (ou frame en cours)
-        grid = [["⬛","⬛","⬛"],["⬛","⬛","⬛"],["⬛","⬛","⬛"]]
-    grid_block = render_grid(grid)
-
-    desc = "\n".join(desc_top) + "\n\n" + grid_block
-
-    if details is not None:
-        if details:
-            lines_txt = []
-            for idx, sym, mult in details:
-                label = ["L1","L2","L3","D1","D2"][idx]
-                lines_txt.append(f"🔥 **{label}** — {sym}{sym}{sym} ×{mult}")
-            total_win = sum(bet_per_line * mult for _,_,mult in details)
-            desc += "\n" + f"**Gain total** : `{fmt_kamas(total_win)}` kamas"
-        else:
-            desc += "\n" + "**Pas de ligne gagnante.** 😿"
-
-    embed = discord.Embed(title=title, description=desc, color=0x8E44AD)
-    if footer_note:
-        embed.set_footer(text=footer_note)
-    else:
-        embed.set_footer(text="Ajuste la mise / lignes puis clique SPIN !")
-    return embed
-
-# ---------- Slash command ----------
 @bot.tree.command(name="slots", description="Jouer à la machine à sous 3×3 (5 lignes)")
 async def slots_cmd(interaction: discord.Interaction):
     view = SlotsView(interaction.user.id, bet_per_line=SLOTS_DEFAULT_BET, lines=SLOTS_DEFAULT_LINES)
-    embed = build_slots_embed(view.bet_per_line, view.lines, None, None, None)
+    # ➜ AU LANCEMENT : grille décorative aléatoire (pas de carrés noirs)
+    init_grid = generate_final_grid()
+    embed = build_slots_embed(view.bet_per_line, view.lines, init_grid, None, None)
     await interaction.response.send_message(embed=embed, view=view)
+
 # ---------- Démarrage ----------
 @bot.event
 async def on_ready():
