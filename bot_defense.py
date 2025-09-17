@@ -240,20 +240,19 @@ class SideChoiceView(discord.ui.View):
 
         # Ping CROUPIER pour valider les mises
         mention = f"<@&{CROUPIER_ROLE_ID}>" if CROUPIER_ROLE_ID else f"**{CROUPIER_ROLE_NAME}**"
-        desc = (
-            f"{mention} — merci de **valider les mises**.
+        desc = f"""\
+{mention} — merci de **valider les mises**.
 
-"
-            f"🎮 Duel : **{duel_human_name(self.game.duel_type)}**
-"
-            f"👥 <@{self.game.starter_id}> → **{starter_choice}**  vs  <@{self.game.joiner_id}> → **{self.game.choice_joiner}**
-"
-            f"💵 Mise : **{self.game.bet}** kamas (par joueur)
-"
-        )
-        embed = discord.Embed(title="🎩 Appel CROUPIER", description=desc, color=COLOR_GOLD)
-        if THUMB_URL: embed.set_thumbnail(url=THUMB_URL)
-        await interaction.response.edit_message(embed=embed, view=CroupierView(self.game))
+🎮 Duel : **{duel_human_name(self.game.duel_type)}**
+👥 <@{self.game.starter_id}> → **{starter_choice}**  vs  <@{self.game.joiner_id}> → **{self.game.choice_joiner}**
+💵 Mise : **{self.game.bet}** kamas (par joueur)
+"""
+
+embed = discord.Embed(title="🎩 Appel CROUPIER", description=desc, color=COLOR_GOLD)
+if THUMB_URL:
+    embed.set_thumbnail(url=THUMB_URL)
+
+await interaction.response.edit_message(embed=embed, view=CroupierView(self.game))
 
 class CroupierView(discord.ui.View):
     def __init__(self, game: RouletteGame, *, timeout: float = 300.0):
