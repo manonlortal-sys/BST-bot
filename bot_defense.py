@@ -209,7 +209,7 @@ class CampSelectionView(discord.ui.View):
             embed.set_thumbnail(url=THUMB_URL)
 
         await interaction.response.edit_message(embed=embed, view=None)
-        msg = interaction.message  # le message qu'on vient d'éditer
+        msg = interaction.message  # le message édité
         self.game.lobby_msg_id = msg.id
         self.game.wait_msg_id = msg.id
 
@@ -373,8 +373,11 @@ async def launch_spin(interaction: discord.Interaction, game: RouletteGame):
 @bot.tree.command(name="roulette", description="Créer/Rejoindre une roulette (mise en kamas)")
 @app_commands.describe(mise="Montant à miser (créateur uniquement)")
 async def roulette_cmd(interaction: discord.Interaction, mise: Optional[int] = None):
-    # Ack immédiat pour éviter 10062
-    await interaction.response.defer(thinking=False)
+    # ACK immédiat (évite 10062), puis on envoie tout via followups
+    try:
+        await interaction.response.send_message("⌛ Préparation…", ephemeral=True)
+    except discord.InteractionResponded:
+        pass
 
     channel_id = interaction.channel_id
     user_id = interaction.user.id
