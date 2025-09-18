@@ -1,15 +1,11 @@
-import os
-import discord
-from discord.ext import commands
-
-# --- Mini serveur keep-alive pour Render ---
+# --- Keep-alive Flask (Render Web Service) ---
 from flask import Flask
 from threading import Thread
 import os
 
-app = Flask('')
+app = Flask(__name__)
 
-@app.route('/')
+@app.route("/")
 def home():
     return "Bot is running!"
 
@@ -17,35 +13,43 @@ def run():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-Thread(target=run).start()
+Thread(target=run, daemon=True).start()
 
-# --- Intents ---
+# --- Discord bot (slash only) ---
+import discord
+from discord.ext import commands
+
 intents = discord.Intents.default()
-intents.message_content = True
 intents.guilds = True
-intents.members = True
-intents.reactions = True
+intents.reactions = True  # utile pour le bot de ping
+# pas de message_content / pas de members
 
-# --- Bot ---
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- Liste des cogs à charger ---
-initial_cogs = ["cogs.roulette", "cogs.ping"]
+INITIAL_COGS = ["cogs.roulette", "cogs.ping"]
+TEST_GUILD_ID = int(os.getenv("TEST_GUILD_ID", "0"))  # mets l’ID de TON serveur pour sync instantané
+
+@bot.event
+async def setup_hook():
+    # charge les cogs
+    for ext in INITIAL_COGS:
+        try:
+            await bot.load_extension(ext)
+            print(f"[OK] Loaded {ext}")
+        except Exception as e:
+            print(f"[ERR] {ext} -> {e}")
+
+    # sync slash (par serveur si possible = immédiat)
+    try:
+        if TEST_GUILD_ID:
+            await bot.tree.sync(guild=discord.Object(id=TEST_GUILD_ID))
+            print(f"Slash synced to guild {TEST_GUILD_ID}")
+        else:
+            synced = await bot.tree.sync()
+            print(f"Globally synced {len(synced)} commands (peut prendre quelques minutes)")
+    except Exception as e:
+        print(f"Sync error: {e}")
 
 @bot.event
 async def on_ready():
-    print(f"✅ Connecté en tant que {bot.user} (ID: {bot.user.id})")
-    print("📦 Cogs chargés :", initial_cogs)
-
-# Charger les cogs
-for cog in initial_cogs:
-    try:
-        bot.load_extension(cog)
-    except Exception as e:
-        print(f"⚠️ Erreur en chargeant {cog}: {e}")
-
-# --- Run ---
-TOKEN = os.getenv("DISCORD_TOKEN")
-if not TOKEN:
-    raise ValueError("❌ DISCORD_TOKEN manquant dans les variables d'environnement")
-bot.run(TOKEN)
+    print(f"✅ Connecté en tant que {bot.user} (ID: {bot.user
