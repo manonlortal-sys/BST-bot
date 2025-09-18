@@ -1,19 +1,27 @@
+# cogs/ping.py
+# Panneau de ping (Def / Def2) + suivi des réactions + leaderboard auto des "pingeurs"
 import os
+import sqlite3
 import datetime
-from typing import Dict, Set, Optional, Tuple
+from zoneinfo import ZoneInfo
+from typing import Dict, Set, Optional, Tuple, List
 
 import discord
 from discord import app_commands
 from discord.ext import commands
+import asyncio
 
 # =========================
 #  ENV VARS (Render → Environment)
 # =========================
-CHANNEL_BUTTONS_ID = int(os.getenv("CHANNEL_BUTTONS_ID", "0"))     # salon où le panneau est publié
-CHANNEL_DEFENSE_ID = int(os.getenv("CHANNEL_DEFENSE_ID", "0"))     # salon où l’alerte est envoyée
-ROLE_DEF_ID = int(os.getenv("ROLE_DEF_ID", "0"))                   # rôle @Def (ID) – facultatif
-ROLE_DEF2_ID = int(os.getenv("ROLE_DEF2_ID", "0"))                 # rôle @Def2 (ID) – facultatif
+CHANNEL_BUTTONS_ID = int(os.getenv("CHANNEL_BUTTONS_ID", "0"))        # salon où le panneau est publié
+CHANNEL_DEFENSE_ID = int(os.getenv("CHANNEL_DEFENSE_ID", "0"))        # salon où l’alerte est envoyée
+PING_LEADERBOARD_CHANNEL_ID = int(os.getenv("PING_LEADERBOARD_CHANNEL_ID", "0"))  # salon du leaderboard auto
+ROLE_DEF_ID = int(os.getenv("ROLE_DEF_ID", "0"))                      # rôle @Def (ID) – facultatif
+ROLE_DEF2_ID = int(os.getenv("ROLE_DEF2_ID", "0"))                    # rôle @Def2 (ID) – facultatif
+DB_PATH = os.getenv("PING_DB_PATH", "ping_data.db")                   # chemin de la base SQLite
 
+TZ = ZoneInfo("Europe/Paris")
 ORANGE = discord.Color.orange()
 GREEN = discord.Color.green()
 RED = discord.Color.red()
@@ -52,7 +60,7 @@ alert_states: Dict[int, AlertState] = {}
 
 
 # =========================
-#  Helpers
+#  Helpers – Embeds & rôles
 # =========================
 def _title_for_side(side: str) -> str:
     return "⚠️ Alerte Percepteur – Guilde 1" if side == "Def" else "⚠️ Alerte Percepteur – Guilde 2"
@@ -77,7 +85,7 @@ def build_embed(state: AlertState, guild: Optional[discord.Guild]) -> discord.Em
         title=_title_for_side(state.side),
         description="🔔 **Connectez-vous pour prendre la défense**\n\n" + status_line,
         color=color,
-        timestamp=datetime.datetime.utcnow()
+        timestamp=datetime.datetime.now(tz=TZ)
     )
 
     # Indication du déclencheur (dans l'embed seulement)
@@ -115,6 +123,81 @@ def _resolve_role(guild: discord.Guild, side: str) -> Optional[discord.Role]:
             if r:
                 return r
         return discord.utils.get(guild.roles, name="Def2")
+
+
+# =========================
+#  SQLite utils (thread-safe via asyncio.to_thread)
+# =========================
+def _db_connect():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    return conn
+
+
+def _db_init():
+    conn = _db_connect()
+    with conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ping_stats(
+                guild_id INTEGER NOT NULL,
+                user_id  INTEGER NOT NULL,
+                count    INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (guild_id, user_id)
+            );
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS meta(
+                guild_id INTEGER NOT NULL,
+                key      TEXT NOT NULL,
+                value    TEXT,
+                PRIMARY KEY (guild_id, key)
+            );
+        """)
+    conn.close()
+
+
+def _db_inc_ping(guild_id: int, user_id: int):
+    conn = _db_connect()
+    with conn:
+        conn.execute("""
+            INSERT INTO ping_stats(guild_id, user_id, count)
+            VALUES(?,?,1)
+            ON CONFLICT(guild_id, user_id) DO UPDATE SET count = count + 1;
+        """, (guild_id, user_id))
+    conn.close()
+
+
+def _db_get_top(guild_id: int, limit: int = 15) -> List[tuple]:
+    conn = _db_connect()
+    cur = conn.execute("""
+        SELECT user_id, count FROM ping_stats
+        WHERE guild_id = ?
+        ORDER BY count DESC, user_id ASC
+        LIMIT ?;
+    """, (guild_id, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def _db_get_meta(guild_id: int, key: str) -> Optional[str]:
+    conn = _db_connect()
+    cur = conn.execute("SELECT value FROM meta WHERE guild_id = ? AND key = ?;", (guild_id, key))
+    row = cur.fetchone()
+    conn.close()
+    return None if row is None else str(row[0])
+
+
+def _db_set_meta(guild_id: int, key: str, value: str):
+    conn = _db_connect()
+    with conn:
+        conn.execute("""
+            INSERT INTO meta(guild_id, key, value)
+            VALUES(?,?,?)
+            ON CONFLICT(guild_id, key) DO UPDATE SET value=excluded.value;
+        """, (guild_id, key, value))
+    conn.close()
 
 
 # =========================
@@ -174,9 +257,72 @@ class PingButtonsView(discord.ui.View):
         embed = build_embed(state, guild)
         embed_msg = await target_ch.send(embed=embed, reference=base_msg, mention_author=False)
 
-        # Mémoriser l'état
+        # Mémoriser l'état (pour le suivi des réactions)
         state.embed_message_id = embed_msg.id
         alert_states[base_msg.id] = state
+
+        # Incrémenter le compteur de pings (leaderboard)
+        await asyncio.to_thread(_db_inc_ping, guild.id, interaction.user.id)
+        # Rafraîchir/afficher le leaderboard auto
+        await refresh_ping_leaderboard(guild)
+
+
+# =========================
+#  Leaderboard auto – helpers
+# =========================
+def _build_lb_embed(guild: discord.Guild, rows: List[tuple]) -> discord.Embed:
+    e = discord.Embed(
+        title="🏁 Leaderboard",
+        description="Classement des pings (cumul serveur)",
+        color=discord.Color.blurple(),
+        timestamp=datetime.datetime.now(tz=TZ)
+    )
+    if not rows:
+        e.add_field(name="Aucun ping", value="Personne n'a encore cliqué les boutons.", inline=False)
+        return e
+
+    lines = []
+    for i, (uid, cnt) in enumerate(rows, start=1):
+        member = guild.get_member(uid)
+        name = member.display_name if member else f"<@{uid}>"
+        lines.append(f"**{i}.** {name} — {cnt} ping{'s' if cnt>1 else ''}")
+    # Discord limite ~1024 chars par field ; on limite proprement
+    text = "\n".join(lines[:25])
+    e.add_field(name="Classement", value=text or "—", inline=False)
+    e.set_footer(text="Actualisé automatiquement")
+    return e
+
+
+async def refresh_ping_leaderboard(guild: discord.Guild):
+    """Crée/édite un message unique 'Leaderboard' dans PING_LEADERBOARD_CHANNEL_ID pour ce serveur."""
+    if PING_LEADERBOARD_CHANNEL_ID == 0:
+        return
+    ch = guild.get_channel(PING_LEADERBOARD_CHANNEL_ID)
+    if not isinstance(ch, (discord.TextChannel, discord.Thread)):
+        return
+
+    rows = await asyncio.to_thread(_db_get_top, guild.id, 15)
+    embed = _build_lb_embed(guild, rows)
+
+    # On regarde si on a déjà un message enregistré
+    msg_id_str = await asyncio.to_thread(_db_get_meta, guild.id, "ping_lb_message_id")
+    msg_obj: Optional[discord.Message] = None
+    if msg_id_str:
+        try:
+            msg_obj = await ch.fetch_message(int(msg_id_str))
+        except discord.NotFound:
+            msg_obj = None
+
+    if msg_obj is None:
+        # Créer nouveau message et mémoriser son id
+        sent = await ch.send(embed=embed)
+        await asyncio.to_thread(_db_set_meta, guild.id, "ping_lb_message_id", str(sent.id))
+    else:
+        try:
+            await msg_obj.edit(embed=embed)
+        except discord.NotFound:
+            sent = await ch.send(embed=embed)
+            await asyncio.to_thread(_db_set_meta, guild.id, "ping_lb_message_id", str(sent.id))
 
 
 # =========================
@@ -287,4 +433,6 @@ class PingCog(commands.Cog):
 #  setup (cog)
 # =========================
 async def setup(bot: commands.Bot):
+    # Init DB (synchrone, mais très rapide)
+    await asyncio.to_thread(_db_init)
     await bot.add_cog(PingCog(bot))
