@@ -1,64 +1,56 @@
-# --- Keep-alive Flask (Render Web Service) ---
+import os
+import discord
+from discord.ext import commands
 from flask import Flask
 from threading import Thread
-import os
 
+# -------------------------
+# Flask keep-alive (Render)
+# -------------------------
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Bot is running!"
+    return "Bot is alive!"
 
-def run():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+def run_web():
+    app.run(host="0.0.0.0", port=10000)
 
-Thread(target=run, daemon=True).start()
-
-# --- Discord bot (slash only) ---
-import discord
-from discord.ext import commands
+# -------------------------
+# Discord Bot
+# -------------------------
+TOKEN = os.getenv("DISCORD_TOKEN")
+TEST_GUILD_ID = int(os.getenv("TEST_GUILD_ID", "0"))  # facultatif
 
 intents = discord.Intents.default()
 intents.guilds = True
-intents.reactions = True  # utile pour le bot de ping
-# pas de message_content / pas de members
+intents.messages = True
+intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-INITIAL_COGS = ["cogs.roulette", "cogs.ping"]
-TEST_GUILD_ID = int(os.getenv("TEST_GUILD_ID", "0"))  # mets l’ID de TON serveur pour sync instantané
-
 @bot.event
 async def setup_hook():
-    # ... load_extension("cogs.roulette"), load_extension("cogs.ping") ...
-    try:
-        synced = await bot.tree.sync()  # sync globale = dispo partout
-        print(f"Slash commands globally synced ({len(synced)})")
-    except Exception as e:
-        print(f"Global sync error: {e}")
-        
-@bot.event
-async def setup_hook():
-    # charge les cogs
-    for ext in INITIAL_COGS:
-        try:
-            await bot.load_extension(ext)
-            print(f"[OK] Loaded {ext}")
-        except Exception as e:
-            print(f"[ERR] {ext} -> {e}")
+    # Charger les cogs
+    await bot.load_extension("cogs.roulette")
+    await bot.load_extension("cogs.ping")
 
-    # sync slash (par serveur si possible = immédiat)
     try:
-        if TEST_GUILD_ID:
+        if TEST_GUILD_ID:  # sync rapide sur serveur de test
             await bot.tree.sync(guild=discord.Object(id=TEST_GUILD_ID))
-            print(f"Slash synced to guild {TEST_GUILD_ID}")
-        else:
-            synced = await bot.tree.sync()
-            print(f"Globally synced {len(synced)} commands (peut prendre quelques minutes)")
+            print(f"Slash commands synced to test guild {TEST_GUILD_ID}")
+        else:  # sync globale (multi-serveurs)
+            await bot.tree.sync()
+            print("Slash commands globally synced")
     except Exception as e:
         print(f"Sync error: {e}")
 
 @bot.event
 async def on_ready():
-    print(f"✅ Connecté en tant que {bot.user} (ID: {bot.user
+    print(f"✅ Connecté en tant que {bot.user} (ID: {bot.user.id})")
+
+if __name__ == "__main__":
+    # lancer Flask keep-alive
+    Thread(target=run_web).start()
+    # lancer le bot
+    bot.run(TOKEN)
