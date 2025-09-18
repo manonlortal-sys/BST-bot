@@ -1,14 +1,13 @@
 import discord
 from discord.ext import commands
 
-class Ping(commands.Cog):
+class PingCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @commands.command(name="testping")
-    async def testping(self, ctx):
-        """Commande de test pour vérifier que le cog ping fonctionne"""
-        await ctx.send("📢 Le cog Ping est bien chargé !")
+    @discord.app_commands.command(name="testping", description="Test: le cog Ping est chargé")
+    async def testping(self, interaction: discord.Interaction):
+        await interaction.response.send_message("📢 Cog Ping OK (slash)")
 
 async def setup(bot):
-    await bot.add_cog(Ping(bot))
+    await bot.add_cog(PingCog(bot))
