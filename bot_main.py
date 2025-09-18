@@ -31,6 +31,15 @@ TEST_GUILD_ID = int(os.getenv("TEST_GUILD_ID", "0"))  # mets l’ID de TON serve
 
 @bot.event
 async def setup_hook():
+    # ... load_extension("cogs.roulette"), load_extension("cogs.ping") ...
+    try:
+        synced = await bot.tree.sync()  # sync globale = dispo partout
+        print(f"Slash commands globally synced ({len(synced)})")
+    except Exception as e:
+        print(f"Global sync error: {e}")
+        
+@bot.event
+async def setup_hook():
     # charge les cogs
     for ext in INITIAL_COGS:
         try:
