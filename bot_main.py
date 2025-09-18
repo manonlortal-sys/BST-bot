@@ -2,6 +2,23 @@ import os
 import discord
 from discord.ext import commands
 
+# --- Mini serveur keep-alive pour Render ---
+from flask import Flask
+from threading import Thread
+import os
+
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+def run():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+Thread(target=run).start()
+
 # --- Intents ---
 intents = discord.Intents.default()
 intents.message_content = True
