@@ -377,13 +377,11 @@ class DuelSelectView(discord.ui.View):
         await inter.response.send_message(help_txt, ephemeral=True)
 
     async def _set(self, inter: discord.Interaction, kind: str):
-        await inter.response.defer_update()
         self.game.duel_type = kind
         self.game.state = "choose_side"
         for c in self.children:
             c.disabled = True
-        msg = await inter.original_response()
-        await msg.edit(embed=e_choose_side(self.game), view=SideSelectView(self.game))
+        await inter.response.edit_message(embed=e_choose_side(self.game), view=SideSelectView(self.game))
 
 class SideSelectView(discord.ui.View):
     def __init__(self, game: RouletteGame):
@@ -420,7 +418,6 @@ class SideSelectView(discord.ui.View):
             ch_games.remove(self.game)
 
     async def _pick(self, inter: discord.Interaction, idx: int):
-        await inter.response.defer_update()
         a, b = self._labels()
         label = a if idx == 0 else b
         norm = (
@@ -430,8 +427,8 @@ class SideSelectView(discord.ui.View):
         self.game.starter_choice = norm
         self.game.state = "waiting_player"
         view = JoinView(self.game)
-        msg = await inter.original_response()
-        await msg.edit(embed=e_wait_player(self.game), view=view)
+        await inter.response.edit_message(embed=e_wait_player(self.game), view=view)
+        msg = await inter.original_response()  # pour l’animation
 
         # Animation "…" pendant l'attente (toutes les 2s)
         async def animate():
@@ -463,7 +460,6 @@ class JoinView(discord.ui.View):
 
     @discord.ui.button(label="Rejoindre", style=discord.ButtonStyle.primary, emoji="🧍")
     async def b_join(self, inter: discord.Interaction, _):
-        await inter.response.defer_update()
         if inter.user.id == self.game.starter_id:
             return
         if self.game.joiner_id is not None:
@@ -473,8 +469,7 @@ class JoinView(discord.ui.View):
         role_ping = f"<@&{ROLE_CROUPIER_ID}>" if ROLE_CROUPIER_ID else "CROUPIER"
         await inter.channel.send(f"{role_ping} — merci de valider les mises pour démarrer la roulette.")
         view = CroupierView(self.game)
-        msg = await inter.original_response()
-        await msg.edit(embed=e_wait_croupier(self.game), view=view)
+        await inter.response.edit_message(embed=e_wait_croupier(self.game), view=view)
 
 class CroupierView(discord.ui.View):
     def __init__(self, game: RouletteGame):
@@ -503,9 +498,7 @@ class CroupierView(discord.ui.View):
         for c in self.children:
             c.disabled = True
         try:
-            await inter.response.defer_update()
-            msg = await inter.original_response()
-            await msg.edit(view=self)
+            await inter.response.edit_message(view=self)
         except Exception:
             pass
 
@@ -524,15 +517,13 @@ class CroupierView(discord.ui.View):
         if self.game.validated or self.game.state != "wait_croupier":
             await inter.response.send_message("Cette table est déjà validée ou terminée.", ephemeral=True)
             return
-        await inter.response.defer_update()
         ch_games = active_games.get(self.game.channel_id, [])
         if self.game in ch_games:
             ch_games.remove(self.game)
-        msg = await inter.original_response()
-        await msg.edit(content="🛑 Table annulée par le croupier.", embed=None, view=None)
+        await inter.response.edit_message(content="🛑 Table annulée par le croupier.", embed=None, view=None)
 
     async def _spin(self, inter: discord.Interaction):
-        # On répond dans les 3s via un followup
+        # On répond via un followup
         base = (
             f"👥 <@{self.game.starter_id}> vs <@{self.game.joiner_id}>\n"
             f"⚔️ Duel : **{self.game.duel_type}** — choix créateur **{self.game.starter_choice}**\n"
