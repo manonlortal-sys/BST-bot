@@ -18,7 +18,6 @@ ORANGE = discord.Color.orange()
 GREEN = discord.Color.green()
 RED = discord.Color.red()
 
-
 # =========================
 #  État d'une alerte
 # =========================
@@ -43,17 +42,14 @@ class AlertState:
         self.incomplete: bool = False               # orthogonal à won/lost
         self.participants: Set[int] = set()         # utilisateurs ayant mis 👍
 
-
 # base_message_id -> state
 alert_states: Dict[int, AlertState] = {}
-
 
 # =========================
 #  Helpers
 # =========================
 def _title_for_side(side: str) -> str:
     return "⚠️ Alerte Percepteur – Guilde 1" if side == "Def" else "⚠️ Alerte Percepteur – Guilde 2"
-
 
 def _status_and_color(state: AlertState) -> Tuple[str, discord.Color]:
     # Texte d'état + couleur, avec "incomplète" orthogonal
@@ -65,7 +61,6 @@ def _status_and_color(state: AlertState) -> Tuple[str, discord.Color]:
     if state.incomplete:
         return "😡 **Défense incomplète**", ORANGE
     return "⏳ Défense en cours (réagissez pour mettre à jour)", ORANGE
-
 
 def build_embed(state: AlertState, guild: Optional[discord.Guild]) -> discord.Embed:
     status_line, color = _status_and_color(state)
@@ -97,6 +92,8 @@ def build_embed(state: AlertState, guild: Optional[discord.Guild]) -> discord.Em
     e.set_footer(text="Ajoutez : 🏆 (gagnée), ❌ (perdue), 😡 (incomplète), 👍 (participation)")
     return e
 
+# Mention forcée des rôles (au cas où les mentions seraient restreintes par défaut)
+ALLOWED_MENTIONS_ROLES = discord.AllowedMentions(roles=True, users=False, everyone=False)
 
 # =========================
 #  Vue avec boutons (persistante)
@@ -139,7 +136,7 @@ class PingButtonsView(discord.ui.View):
         base_text = f"{role_mention} — **Percepteur attaqué** ({guild_label}) !"
 
         # Message texte (ping)
-        base_msg = await target_ch.send(content=base_text)
+        base_msg = await target_ch.send(content=base_text, allowed_mentions=ALLOWED_MENTIONS_ROLES)
 
         # Embed initial (reply au ping pour liaison visuelle)
         state = AlertState(
@@ -159,7 +156,6 @@ class PingButtonsView(discord.ui.View):
 
         # Confirmation à l'utilisateur
         await interaction.followup.send("✅ Alerte envoyée dans le salon d'alerte.", ephemeral=True)
-
 
 # =========================
 #  Cog
@@ -259,7 +255,6 @@ class PingCog(commands.Cog):
             await embed_msg.edit(embed=new_embed)
         except Exception:
             pass
-
 
 # =========================
 #  setup (cog)
