@@ -5,10 +5,9 @@ class Roulette(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @commands.command(name="testroulette")
-    async def testroulette(self, ctx):
-        """Commande de test pour vérifier que le cog roulette fonctionne"""
-        await ctx.send("🎰 Le cog Roulette est bien chargé !")
+    @discord.app_commands.command(name="testroulette", description="Test: le cog Roulette est chargé")
+    async def testroulette(self, interaction: discord.Interaction):
+        await interaction.response.send_message("🎰 Cog Roulette OK (slash)")
 
 async def setup(bot):
     await bot.add_cog(Roulette(bot))
