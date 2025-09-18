@@ -1,6 +1,6 @@
 import os
 import datetime
-from typing import Dict, Set, Optional
+from typing import Dict, Set, Optional, Tuple
 
 import discord
 from discord import app_commands
@@ -17,6 +17,7 @@ ROLE_DEF2_ID = int(os.getenv("ROLE_DEF2_ID", "0"))                 # rôle @Def2
 ORANGE = discord.Color.orange()
 GREEN = discord.Color.green()
 RED = discord.Color.red()
+
 
 # =========================
 #  État d'une alerte
@@ -39,11 +40,13 @@ class AlertState:
         self.clicked_by_id = clicked_by_id
         self.won: bool = False
         self.lost: bool = False
-        self.incomplete: bool = False
+        self.incomplete: bool = False               # orthogonal à won/lost
         self.participants: Set[int] = set()         # utilisateurs ayant mis 👍
+
 
 # base_message_id -> state
 alert_states: Dict[int, AlertState] = {}
+
 
 # =========================
 #  Helpers
@@ -51,7 +54,8 @@ alert_states: Dict[int, AlertState] = {}
 def _title_for_side(side: str) -> str:
     return "⚠️ Alerte Percepteur – Guilde 1" if side == "Def" else "⚠️ Alerte Percepteur – Guilde 2"
 
-def _status_and_color(state: AlertState) -> (str, discord.Color):
+
+def _status_and_color(state: AlertState) -> Tuple[str, discord.Color]:
     # Texte d'état + couleur, avec "incomplète" orthogonal
     suffix = " (incomplète)" if state.incomplete and (state.won or state.lost) else ""
     if state.won:
@@ -61,6 +65,7 @@ def _status_and_color(state: AlertState) -> (str, discord.Color):
     if state.incomplete:
         return "😡 **Défense incomplète**", ORANGE
     return "⏳ Défense en cours (réagissez pour mettre à jour)", ORANGE
+
 
 def build_embed(state: AlertState, guild: Optional[discord.Guild]) -> discord.Embed:
     status_line, color = _status_and_color(state)
@@ -92,11 +97,15 @@ def build_embed(state: AlertState, guild: Optional[discord.Guild]) -> discord.Em
     e.set_footer(text="Ajoutez : 🏆 (gagnée), ❌ (perdue), 😡 (incomplète), 👍 (participation)")
     return e
 
+
 # =========================
-#  Vue avec boutons
+#  Vue avec boutons (persistante)
 # =========================
 class PingButtonsView(discord.ui.View):
-    """Panneau avec 2 boutons : Guilde 1 (@Def) / Guilde 2 (@Def2)."""
+    """
+    Panneau avec 2 boutons : Guilde 1 (@Def) / Guilde 2 (@Def2).
+    Vue PERSISTANTE : enregistrez-la au démarrage avec bot.add_view(PingButtonsView()).
+    """
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -109,12 +118,13 @@ class PingButtonsView(discord.ui.View):
         await self._handle_click(interaction, side="Def2")
 
     async def _handle_click(self, interaction: discord.Interaction, side: str):
+        # Accusé de réception immédiat pour éviter 10062
+        await interaction.response.defer(thinking=False)
+
         # Vérifs ENV / salons
-        if CHANNEL_DEFENSE_ID == 0:
-            return await interaction.response.send_message("⚠️ CHANNEL_DEFENSE_ID non configuré.", ephemeral=True)
         target_ch = interaction.client.get_channel(CHANNEL_DEFENSE_ID)  # type: ignore
-        if not isinstance(target_ch, (discord.TextChannel, discord.Thread)):
-            return await interaction.response.send_message("⚠️ Salon d'alerte introuvable.", ephemeral=True)
+        if CHANNEL_DEFENSE_ID == 0 or not isinstance(target_ch, (discord.TextChannel, discord.Thread)):
+            return await interaction.followup.send("⚠️ CHANNEL_DEFENSE_ID non configuré ou salon introuvable.", ephemeral=True)
 
         # Mention du rôle (hors embed)
         if side == "Def":
@@ -127,7 +137,6 @@ class PingButtonsView(discord.ui.View):
             guild_label = "Guilde 2"
 
         base_text = f"{role_mention} — **Percepteur attaqué** ({guild_label}) !"
-        await interaction.response.send_message("✅ Alerte envoyée dans le salon d'alerte.", ephemeral=True)
 
         # Message texte (ping)
         base_msg = await target_ch.send(content=base_text)
@@ -148,6 +157,10 @@ class PingButtonsView(discord.ui.View):
         state.embed_message_id = embed_msg.id
         alert_states[base_msg.id] = state
 
+        # Confirmation à l'utilisateur
+        await interaction.followup.send("✅ Alerte envoyée dans le salon d'alerte.", ephemeral=True)
+
+
 # =========================
 #  Cog
 # =========================
@@ -159,11 +172,12 @@ class PingCog(commands.Cog):
     @app_commands.command(name="pingpanel", description="Publier le panneau de ping (@Def / @Def2).")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def pingpanel(self, interaction: discord.Interaction):
-        if CHANNEL_BUTTONS_ID == 0:
-            return await interaction.response.send_message("⚠️ CHANNEL_BUTTONS_ID non configuré.", ephemeral=True)
+        # Accusé de réception immédiat pour éviter 10062
+        await interaction.response.defer(ephemeral=True, thinking=False)
+
         panel_ch = interaction.client.get_channel(CHANNEL_BUTTONS_ID)  # type: ignore
-        if not isinstance(panel_ch, (discord.TextChannel, discord.Thread)):
-            return await interaction.response.send_message("⚠️ Salon panneau introuvable.", ephemeral=True)
+        if CHANNEL_BUTTONS_ID == 0 or not isinstance(panel_ch, (discord.TextChannel, discord.Thread)):
+            return await interaction.followup.send("⚠️ CHANNEL_BUTTONS_ID non configuré ou salon introuvable.", ephemeral=True)
 
         embed = discord.Embed(
             title="📢 Bot de Ping Percepteur",
@@ -174,7 +188,7 @@ class PingCog(commands.Cog):
             color=ORANGE
         )
         await panel_ch.send(embed=embed, view=PingButtonsView())
-        await interaction.response.send_message("✅ Panneau publié.", ephemeral=True)
+        await interaction.followup.send("✅ Panneau publié.", ephemeral=True)
 
     # Mets à jour l'embed d'alerte au fil des réactions (dans CHANNEL_DEFENSE_ID)
     @commands.Cog.listener()
@@ -215,7 +229,7 @@ class PingCog(commands.Cog):
         except discord.NotFound:
             return
 
-        # Mettre à jour les drapeaux
+        # Mettre à jour les drapeaux (won/lost exclusifs ; incomplete orthogonal)
         if emoji == "🏆":
             if added:
                 state.won = True
@@ -246,8 +260,9 @@ class PingCog(commands.Cog):
         except Exception:
             pass
 
+
 # =========================
-#  setup
+#  setup (cog)
 # =========================
 async def setup(bot: commands.Bot):
     await bot.add_cog(PingCog(bot))
