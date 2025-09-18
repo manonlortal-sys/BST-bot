@@ -1,586 +1,614 @@
+# bot_roulette.py
+# Bot Roulette – Discord
+# - Slash /roulette pour lancer une partie
+# - Créateur choisit le type de duel via boutons (Rouge/Noir, Pair/Impair, 1-18/19-36)
+# - Créateur choisit son camp
+# - Un second joueur rejoint
+# - Le bot ping le rôle CROUPIER pour valider les mises, le croupier clique "Valider"
+# - Spin avec GIF (optionnel via SPIN_GIF_URL)
+# - Commission croupier: 5% du pot (configurable)
+# - Leaderboard "sticky" par serveur : posté une fois puis édité après chaque partie
+#
+# ENV à définir (Render / .env):
+#   DISCORD_TOKEN=...
+#   ROLE_CROUPIER_ID=123456789012345678
+#   LEADERBOARD_CHANNEL_ID=123456789012345678
+#   COMMISSION_PERCENT=5
+#   SPIN_GIF_URL=https://...gif (optionnel)
+#   PORT=10000  (Render)
+#
+# requirements.txt:
+#   discord.py
+#   Flask
+#   aiosqlite
+
 import os
 import asyncio
 import random
-import threading
-import sqlite3
-from datetime import datetime, timezone
-from typing import Optional
+import time
+from dataclasses import dataclass, field
+from typing import Optional, Dict
 
 import discord
-from discord.ext import commands
 from discord import app_commands
-from flask import Flask
+from discord.ext import commands
 import aiosqlite
 
-# ------------------ Flask keep-alive (Render Web Service) ------------------
+# --- Keep-alive (Render) ---
+from flask import Flask
+from threading import Thread
+
 app = Flask(__name__)
-
-@app.get("/")
+@app.route("/")
 def home():
-    return "Bot en ligne"
+    return "Roulette bot up"
+def _run_flask():
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
+Thread(target=_run_flask, daemon=True).start()
 
-def run_flask():
-    port = int(os.getenv("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+# --- Config ---
+TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
+ROLE_CROUPIER_ID = int(os.getenv("ROLE_CROUPIER_ID", "0"))
+LEADERBOARD_CHANNEL_ID = int(os.getenv("LEADERBOARD_CHANNEL_ID", "0"))
+COMMISSION_PERCENT = int(os.getenv("COMMISSION_PERCENT", "5"))
+SPIN_GIF_URL = os.getenv("SPIN_GIF_URL", "").strip()
 
-threading.Thread(target=run_flask, daemon=True).start()
+DB_PATH = os.getenv("DB_PATH", "roulette.db")
 
-# ------------------ ENV / CONFIG ------------------
-TOKEN = os.getenv("DISCORD_TOKEN", "")
-ROLE_CROUPIER_ID = int(os.getenv("ROLE_CROUPIER_ID", "0") or 0)
-LEADERBOARD_CHANNEL_ID = int(os.getenv("LEADERBOARD_CHANNEL_ID", "0") or 0)
-SPIN_GIF_URL = os.getenv("SPIN_GIF_URL", "")
-DB_PATH = os.getenv("DB_PATH", "casino.db")
+INTENTS = discord.Intents.default()
+INTENTS.guilds = True
+INTENTS.messages = True
+INTENTS.message_content = False  # on utilise des slash commands
+bot = commands.Bot(command_prefix="!", intents=INTENTS)
 
-# Timers
-JOIN_TIMEOUT = 300          # 5 min pour qu’un joueur 2 rejoigne
-CROUPIER_TIMEOUT = 300      # 5 min pour que le croupier valide
+RED_NUMBERS = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
 
-# Discord intents / bot
-intents = discord.Intents.default()
-intents.guilds = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+# ========== Data ==========
+@dataclass
+class Game:
+    guild_id: int
+    channel_id: int
+    starter_id: int
+    stake: int
+    duel_type: Optional[str] = None   # "couleur" | "pairimpair" | "manque_passe"
+    starter_choice: Optional[str] = None  # "rouge"/"noir" | "pair"/"impair" | "1-18"/"19-36"
+    joiner_id: Optional[int] = None
+    message_id: Optional[int] = None
+    state: str = "choosing_duel"  # choosing_duel -> choosing_side -> waiting_opponent -> awaiting_croupier -> spinning -> done
+    croupier_validated: bool = False
+    validation_message_id: Optional[int] = None
 
-# ------------------ DB INIT ------------------
-SCHEMA_SQL = """
+# active games by message id (main UI message)
+ACTIVE_GAMES: Dict[int, Game] = {}
+# lock for leaderboard update per guild
+LB_LOCKS: Dict[int, asyncio.Lock] = {}
+
+# ========== DB ==========
+INIT_SQL = """
 PRAGMA journal_mode=WAL;
-
-CREATE TABLE IF NOT EXISTS lb_users (
-  guild_id     INTEGER NOT NULL,
-  user_id      INTEGER NOT NULL,
-  total_bet    INTEGER NOT NULL DEFAULT 0,
-  net          INTEGER NOT NULL DEFAULT 0,
-  wins         INTEGER NOT NULL DEFAULT 0,
-  losses       INTEGER NOT NULL DEFAULT 0,
-  best_gain    INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (guild_id, user_id)
+CREATE TABLE IF NOT EXISTS sticky_messages(
+  guild_id INTEGER PRIMARY KEY,
+  leaderboard_msg_id INTEGER,
+  channel_id INTEGER
 );
 
-CREATE TABLE IF NOT EXISTS lb_croupier_users (
-  guild_id         INTEGER NOT NULL,
-  user_id          INTEGER NOT NULL,
-  commission_total INTEGER NOT NULL DEFAULT 0,
-  tx_count         INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (guild_id, user_id)
+CREATE TABLE IF NOT EXISTS stats_players(
+  guild_id INTEGER,
+  user_id INTEGER,
+  total_wager INTEGER DEFAULT 0,  -- total misé (tous duels)
+  net INTEGER DEFAULT 0,          -- gains - pertes (commission exclue)
+  wins INTEGER DEFAULT 0,
+  losses INTEGER DEFAULT 0,
+  biggest_win INTEGER DEFAULT 0,
+  streak_win INTEGER DEFAULT 0,
+  streak_loss INTEGER DEFAULT 0,
+  PRIMARY KEY(guild_id, user_id)
 );
 
-CREATE TABLE IF NOT EXISTS sticky_messages (
-  guild_id   INTEGER NOT NULL,
-  kind       TEXT    NOT NULL,   -- 'players' | 'croupiers'
-  channel_id INTEGER NOT NULL,
-  message_id INTEGER NOT NULL,
-  PRIMARY KEY (guild_id, kind)
+-- Historique minimal par partie (utile si besoin d'auditer)
+CREATE TABLE IF NOT EXISTS games(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  guild_id INTEGER,
+  channel_id INTEGER,
+  starter_id INTEGER,
+  joiner_id INTEGER,
+  stake INTEGER,
+  duel_type TEXT,
+  starter_choice TEXT,
+  winner_id INTEGER,
+  loser_id INTEGER,
+  result_number INTEGER,
+  result_color TEXT,
+  commission INTEGER,
+  ts INTEGER
 );
 """
 
-async def init_db():
+async def db_init():
     async with aiosqlite.connect(DB_PATH) as db:
-        for stmt in SCHEMA_SQL.strip().split(";\n\n"):
-            if stmt.strip():
-                await db.execute(stmt)
+        for stmt in INIT_SQL.strip().split(";"):
+            s = stmt.strip()
+            if s:
+                await db.execute(s)
         await db.commit()
 
-asyncio.get_event_loop().run_until_complete(init_db())
+async def _get_lb_msg_id(guild_id: int) -> Optional[int]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT leaderboard_msg_id FROM sticky_messages WHERE guild_id=?", (guild_id,))
+        row = await cur.fetchone()
+        return row[0] if row and row[0] else None
 
-# ------------------ Game state ------------------
-RED_NUMBERS = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
-BLACK_NUMBERS = set(range(1, 37)) - RED_NUMBERS
+async def _set_lb_msg_id(guild_id: int, channel_id: int, msg_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO sticky_messages(guild_id, leaderboard_msg_id, channel_id)
+            VALUES(?,?,?)
+            ON CONFLICT(guild_id) DO UPDATE SET leaderboard_msg_id=excluded.leaderboard_msg_id, channel_id=excluded.channel_id
+        """, (guild_id, msg_id, channel_id))
+        await db.commit()
 
-class RouletteGame:
-    def __init__(self, channel_id: int, starter_id: int, mise: int):
-        self.channel_id = channel_id
-        self.starter_id = starter_id
-        self.joiner_id: Optional[int] = None
+async def record_game_and_update_stats(
+    g: Game,
+    winner_id: int,
+    loser_id: int,
+    result_number: int,
+    result_color: str,
+    commission: int
+):
+    pot = g.stake * 2
+    net_gain_winner = pot - commission  # net reçu par gagnant
+    # net gagné par rapport à sa mise = +stake (duel équitable), mais on enregistre le net global côté leaderboard comme (gain - perte).
+    # Pour représenter les flux: gagnant + (pot - commission - stake) = stake - commission ; perdant -stake
+    # MAIS on t'avait demandé: "leaderboard n'affiche pas la commission". Donc on crédite gagnant +stake et débite perdant -stake.
+    # La commission n'apparaît pas chez les joueurs.
 
-        self.duel_type: Optional[str] = None  # "couleur" | "parité" | "moitié"
-        self.choice: Optional[str] = None     # 'rouge'/'noir' | 'pair'/'impair' | '1-18'/'19-36'
-        self.joiner_choice: Optional[str] = None
+    async with aiosqlite.connect(DB_PATH) as db:
+        ts = int(time.time())
+        await db.execute("""
+            INSERT INTO games(guild_id, channel_id, starter_id, joiner_id, stake, duel_type, starter_choice,
+                              winner_id, loser_id, result_number, result_color, commission, ts)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (g.guild_id, g.channel_id, g.starter_id, g.joiner_id, g.stake, g.duel_type, g.starter_choice,
+              winner_id, loser_id, result_number, result_color, commission, ts))
 
-        self.mise = mise
-        self.state = "choose_duel"    # choose_duel -> choose_side -> wait_join -> wait_croupier -> spinning -> done
-        self.validated = False
-        self.created_msg_id: Optional[int] = None
-        self.join_deadline = datetime.now(timezone.utc).timestamp() + JOIN_TIMEOUT
+        # total_wager : chaque joueur a misé "stake"
+        for uid in (g.starter_id, g.joiner_id):
+            await db.execute("""
+                INSERT INTO stats_players(guild_id, user_id, total_wager, net, wins, losses, biggest_win, streak_win, streak_loss)
+                VALUES(?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(guild_id, user_id) DO NOTHING
+            """, (g.guild_id, uid, 0, 0, 0, 0, 0, 0, 0))
+            await db.execute("UPDATE stats_players SET total_wager = total_wager + ? WHERE guild_id=? AND user_id=?", (g.stake, g.guild_id, uid))
 
-# 1 partie par salon (simple & robuste)
-active_games: dict[int, RouletteGame] = {}  # channel_id -> game
+        # net: gagnant +stake, perdant -stake (commission ignorée ici)
+        await db.execute("UPDATE stats_players SET net = net + ?, wins = wins + 1 WHERE guild_id=? AND user_id=?", (g.stake, g.guild_id, winner_id))
+        await db.execute("UPDATE stats_players SET net = net - ?, losses = losses + 1 WHERE guild_id=? AND user_id=?", (g.stake, g.guild_id, loser_id))
 
-# ------------------ Embeds helpers ------------------
-def emb_choose_duel(g: RouletteGame) -> discord.Embed:
-    return discord.Embed(
-        title="🎰 Roulette – Choix du duel",
-        description=(
-            f"**Créateur :** <@{g.starter_id}>\n"
-            f"**Mise :** {g.mise}k\n\n"
-            "Choisis un type de duel ci-dessous :"
-        ),
-        color=0xE67E22
+        # biggest_win
+        await db.execute("""
+            UPDATE stats_players
+            SET biggest_win = CASE WHEN ? > biggest_win THEN ? ELSE biggest_win END
+            WHERE guild_id=? AND user_id=?
+        """, (g.stake, g.stake, g.guild_id, winner_id))
+
+        # streaks
+        # winner: streak_win +1, streak_loss=0 ; loser: streak_loss +1, streak_win=0
+        await db.execute("""
+            UPDATE stats_players
+            SET streak_win = streak_win + 1, streak_loss = 0
+            WHERE guild_id=? AND user_id=?
+        """, (g.guild_id, winner_id))
+        await db.execute("""
+            UPDATE stats_players
+            SET streak_loss = streak_loss + 1, streak_win = 0
+            WHERE guild_id=? AND user_id=?
+        """, (g.guild_id, loser_id))
+
+        await db.commit()
+
+async def build_leaderboard_embed(guild: discord.Guild) -> discord.Embed:
+    # Tri par total_wager desc
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("""
+            SELECT user_id, total_wager, net, wins, losses, biggest_win
+            FROM stats_players
+            WHERE guild_id=?
+            ORDER BY total_wager DESC, user_id ASC
+            LIMIT 30
+        """, (guild.id,))
+        rows = await cur.fetchall()
+        cur2 = await db.execute("""
+            SELECT COALESCE(SUM(total_wager),0) FROM stats_players WHERE guild_id=?
+        """, (guild.id,))
+        total_all = (await cur2.fetchone())[0]
+
+    em = discord.Embed(
+        title="Leaderboard",
+        description="Classement par **total misé** (commission non incluse dans le net).",
+        color=discord.Color.gold()
     )
-
-def emb_choose_side(g: RouletteGame) -> discord.Embed:
-    label = {
-        "couleur": "🔴⚫ **Rouge/Noir**",
-        "parité": "➗ **Pair/Impair**",
-        "moitié": "↔️ **1-18 / 19-36**",
-    }[g.duel_type]
-    return discord.Embed(
-        title="🎰 Roulette – Choisis ton camp",
-        description=(
-            f"**Duel :** {label}\n"
-            f"**Mise :** {g.mise}k\n\n"
-            "Clique sur l’un des deux boutons pour définir **ton camp**."
-        ),
-        color=0x3498DB
-    )
-
-def emb_wait_join(g: RouletteGame) -> discord.Embed:
-    return discord.Embed(
-        title="🎲 Partie ouverte",
-        description=(
-            f"**Créateur :** <@{g.starter_id}> — mise **{g.mise}k**\n"
-            f"**Duel :** {g.duel_type} | **Camp du créateur :** {g.choice}\n\n"
-            "➡️ Tape **`/roulette`** pour rejoindre et prendre l’autre camp !\n"
-            f"⏳ Annulation auto dans **{JOIN_TIMEOUT//60} min** si personne ne rejoint."
-        ),
-        color=0xF1C40F
-    )
-
-def emb_wait_croupier(g: RouletteGame) -> discord.Embed:
-    return discord.Embed(
-        title="💰 Validation des mises requise",
-        description=(
-            f"**Créateur :** <@{g.starter_id}> ({g.choice})\n"
-            f"**Adversaire :** <@{g.joiner_id}> ({g.joiner_choice})\n"
-            f"**Mise :** {g.mise}k chacun — **Pot : {g.mise*2}k**\n"
-            f"**Duel :** {g.duel_type}\n\n"
-            "Un **croupier** doit valider pour lancer la roue."
-        ),
-        color=0xE74C3C
-    )
-
-def emb_spinning(g: RouletteGame) -> discord.Embed:
-    e = discord.Embed(
-        title="🎰 Roulette en cours...",
-        description="⌛ La roue tourne...",
-        color=0x95A5A6
-    )
-    if SPIN_GIF_URL:
-        e.set_image(url=SPIN_GIF_URL)
-    return e
-
-def emb_result(g: RouletteGame, n: int, col: str, winner_id: Optional[int], commission: int) -> discord.Embed:
-    lines = [f"🎯 **Résultat :** {n} ({col})"]
-    if winner_id:
-        gain = g.mise*2 - commission
-        lines.append(f"🏆 **Gagnant :** <@{winner_id}> — **{gain}k**")
-        lines.append(f"💸 **Commission croupier :** {commission}k")
-        color = 0x2ECC71
+    if not rows:
+        em.add_field(name="Aucun joueur", value="Pas de parties enregistrées.", inline=False)
     else:
-        lines.append("❌ Aucun gagnant (0 ne paie aucun camp).")
-        color = 0xC0392B
-    return discord.Embed(title="🎲 Résultat de la roulette", description="\n".join(lines), color=color)
+        lines = []
+        for i, (uid, wager, net, wins, losses, biggest) in enumerate(rows, start=1):
+            member = guild.get_member(uid)
+            name = member.display_name if member else f"<@{uid}>"
+            sign = "▲" if net > 0 else ("▼" if net < 0 else "•")
+            lines.append(f"**{i}.** {name} — misé **{wager}** — net **{net}** {sign} — W/L: {wins}/{losses} — maxi: {biggest}")
+        em.add_field(name="Joueurs", value="\n".join(lines), inline=False)
+    em.set_footer(text=f"Total misé (tous joueurs) : {total_all}")
+    return em
 
-# ------------------ Views (UI) ------------------
+async def ensure_leaderboard_message(guild: discord.Guild) -> Optional[discord.Message]:
+    if LEADERBOARD_CHANNEL_ID == 0:
+        return None
+    ch = guild.get_channel(LEADERBOARD_CHANNEL_ID)
+    if not isinstance(ch, (discord.TextChannel, discord.Thread, discord.ForumChannel, discord.VoiceChannel)) and not isinstance(ch, discord.abc.Messageable):
+        return None
+    msg_id = await _get_lb_msg_id(guild.id)
+    if msg_id:
+        try:
+            msg = await ch.fetch_message(msg_id)
+            return msg
+        except discord.NotFound:
+            pass
+    # Create new
+    em = await build_leaderboard_embed(guild)
+    msg = await ch.send(embed=em)
+    await _set_lb_msg_id(guild.id, ch.id, msg.id)
+    return msg
+
+async def update_leaderboard(guild: discord.Guild):
+    if guild is None:
+        return
+    lock = LB_LOCKS.setdefault(guild.id, asyncio.Lock())
+    async with lock:
+        msg = await ensure_leaderboard_message(guild)
+        if not msg:
+            return
+        em = await build_leaderboard_embed(guild)
+        await msg.edit(embed=em)
+
+# ========== Views ==========
 class DuelSelectView(discord.ui.View):
-    def __init__(self, game: RouletteGame):
-        super().__init__(timeout=180)
+    def __init__(self, game: Game):
+        super().__init__(timeout=300)
         self.game = game
 
-    async def _set(self, inter: discord.Interaction, duel_type: str):
+    async def _ensure_creator(self, inter: discord.Interaction) -> bool:
         if inter.user.id != self.game.starter_id:
             await inter.response.send_message("Seul le créateur peut choisir le duel.", ephemeral=True)
-            return
-        self.game.duel_type = duel_type
-        self.game.state = "choose_side"
-        # switch vers choix de camp
-        await inter.response.edit_message(embed=emb_choose_side(self.game), view=SideSelectView(self.game))
-
-    @discord.ui.button(label="🔴⚫ Rouge/Noir", style=discord.ButtonStyle.danger)
-    async def b_color(self, inter: discord.Interaction, _):
-        await self._set(inter, "couleur")
-
-    @discord.ui.button(label="➗ Pair/Impair", style=discord.ButtonStyle.primary)
-    async def b_parity(self, inter: discord.Interaction, _):
-        await self._set(inter, "parité")
-
-    @discord.ui.button(label="↔️ 1-18 / 19-36", style=discord.ButtonStyle.success)
-    async def b_half(self, inter: discord.Interaction, _):
-        await self._set(inter, "moitié")
-
-class SideSelectView(discord.ui.View):
-    def __init__(self, game: RouletteGame):
-        super().__init__(timeout=180)
-        self.game = game
-        # deux boutons dynamiques selon duel
-        a_label, b_label = {
-            "couleur": ("Rouge", "Noir"),
-            "parité": ("Pair", "Impair"),
-            "moitié": ("1-18", "19-36"),
-        }[self.game.duel_type]
-        self.a_label = a_label
-        self.b_label = b_label
-
-        self.add_item(discord.ui.Button(label=f"✅ {a_label}", style=discord.ButtonStyle.success, custom_id="side_a"))
-        self.add_item(discord.ui.Button(label=f"✅ {b_label}", style=discord.ButtonStyle.secondary, custom_id="side_b"))
-
-    async def interaction_check(self, inter: discord.Interaction) -> bool:
-        if inter.user.id != self.game.starter_id:
-            await inter.response.send_message("Seul le créateur choisit son camp.", ephemeral=True)
             return False
         return True
 
-    @discord.ui.button(label="(hidden)", style=discord.ButtonStyle.secondary)
-    async def dummy(self, inter: discord.Interaction, _):
-        pass  # placeholder never used (we add our own items above)
+    async def _set(self, inter: discord.Interaction, duel: str):
+        if not await self._ensure_creator(inter): return
+        self.game.duel_type = duel
+        self.game.state = "choosing_side"
+        await inter.response.edit_message(embed=build_duel_embed(self.game), view=SideSelectView(self.game))
 
-    async def on_timeout(self) -> None:
-        # rien à faire ; si timeout, le créateur relance
-        pass
+    @discord.ui.button(label="🔴⚫ Rouge/Noir", style=discord.ButtonStyle.danger)
+    async def b_color(self, inter: discord.Interaction, _btn: discord.ui.Button):
+        await self._set(inter, "couleur")
 
-    async def on_item_interaction(self, inter: discord.Interaction):
-        # gère side_a / side_b
-        cid = inter.data.get("custom_id")
-        if cid == "side_a":
-            self.game.choice = self.a_label.lower()
-        elif cid == "side_b":
-            self.game.choice = self.b_label.lower()
-        else:
-            return
+    @discord.ui.button(label="➖➕ Pair/Impair", style=discord.ButtonStyle.secondary)
+    async def b_even(self, inter: discord.Interaction, _btn: discord.ui.Button):
+        await self._set(inter, "pairimpair")
 
-        self.game.state = "wait_join"
-        await inter.response.edit_message(embed=emb_wait_join(self.game), view=None)
+    @discord.ui.button(label="1–18 / 19–36", style=discord.ButtonStyle.primary)
+    async def b_range(self, inter: discord.Interaction, _btn: discord.ui.Button):
+        await self._set(inter, "manque_passe")
 
-    async def callback(self, inter: discord.Interaction):
-        # fallback (discord.py gère via item.callback habituellement)
-        await self.on_item_interaction(inter)
-
-    async def interaction_check_item(self, inter: discord.Interaction, item: discord.ui.Item) -> bool:
-        return await self.interaction_check(inter)
-
-    async def on_error(self, error: Exception, item: discord.ui.Item, inter: discord.Interaction) -> None:
-        try:
-            await inter.response.send_message("Erreur lors du choix du camp.", ephemeral=True)
-        except Exception:
-            pass
-
-    # override dispatch to catch custom_id buttons
-    async def _scheduled_task(self, item: discord.ui.Item, inter: discord.Interaction):
-        # hijack to handle our synthetic buttons
-        await self.on_item_interaction(inter)
-
-class ValidateView(discord.ui.View):
-    def __init__(self, game: RouletteGame):
-        super().__init__(timeout=CROUPIER_TIMEOUT)
+class SideSelectView(discord.ui.View):
+    def __init__(self, game: Game):
+        super().__init__(timeout=300)
         self.game = game
 
-    @discord.ui.button(label="✅ Valider les mises", style=discord.ButtonStyle.success)
-    async def validate(self, inter: discord.Interaction, _):
-        # sécurités
-        if self.game.state != "wait_croupier" or self.game.validated:
-            await inter.response.send_message("Cette table n'est pas en attente de validation.", ephemeral=True)
-            return
-        # rôle croupier requis (si défini)
-        if ROLE_CROUPIER_ID and not any(r.id == ROLE_CROUPIER_ID for r in inter.user.roles):
-            await inter.response.send_message("Seul un **croupier** peut valider.", ephemeral=True)
-            return
+        # Boutons selon duel_type
+        if game.duel_type == "couleur":
+            self.add_item(discord.ui.Button(label="Je choisis 🔴 Rouge", style=discord.ButtonStyle.danger, custom_id="side_rouge"))
+            self.add_item(discord.ui.Button(label="Je choisis ⚫ Noir", style=discord.ButtonStyle.secondary, custom_id="side_noir"))
+        elif game.duel_type == "pairimpair":
+            self.add_item(discord.ui.Button(label="Je choisis Pair", style=discord.ButtonStyle.primary, custom_id="side_pair"))
+            self.add_item(discord.ui.Button(label="Je choisis Impair", style=discord.ButtonStyle.secondary, custom_id="side_impair"))
+        else:
+            self.add_item(discord.ui.Button(label="Je choisis 1–18", style=discord.ButtonStyle.primary, custom_id="side_1_18"))
+            self.add_item(discord.ui.Button(label="Je choisis 19–36", style=discord.ButtonStyle.secondary, custom_id="side_19_36"))
 
-        self.game.validated = True
-        self.game.state = "spinning"
-
-        # on affiche le GIF de spin
-        await inter.response.edit_message(embed=emb_spinning(self.game), view=None)
-
-        # petite attente "immersive"
-        await asyncio.sleep(4)
-
-        # tirage
-        n = random.randint(0, 36)
-        col = "vert" if n == 0 else ("rouge" if n in RED_NUMBERS else "noir")
-
-        def is_win(choice: Optional[str], duel: Optional[str]) -> bool:
-            if not choice or not duel:
-                return False
-            if duel == "couleur":
-                if n == 0:
-                    return False
-                return (choice == "rouge" and n in RED_NUMBERS) or (choice == "noir" and n in BLACK_NUMBERS)
-            if duel == "parité":
-                if n == 0:
-                    return False
-                return (choice == "pair" and n % 2 == 0) or (choice == "impair" and n % 2 == 1)
-            if duel == "moitié":
-                return (choice == "1-18" and 1 <= n <= 18) or (choice == "19-36" and 19 <= n <= 36)
+    async def interaction_check(self, inter: discord.Interaction) -> bool:
+        if inter.user.id != self.game.starter_id:
+            await inter.response.send_message("Seul le créateur peut choisir son camp.", ephemeral=True)
             return False
+        return True
 
-        # gagnant / perdant
-        winner_id = None
-        loser_id = None
-        if is_win(self.game.choice, self.game.duel_type):
-            winner_id = self.game.starter_id
-            loser_id = self.game.joiner_id
-        elif is_win(self.game.joiner_choice, self.game.duel_type):
-            winner_id = self.game.joiner_id
-            loser_id = self.game.starter_id
+    async def on_timeout(self) -> None:
+        # clean si pas terminé
+        pass
 
-        pot = self.game.mise * 2
-        commission = int(pot * 0.05)
-        result_embed = emb_result(self.game, n, col, winner_id, commission)
-        await inter.message.edit(embed=result_embed)
+    @discord.ui.button(label="placeholder", style=discord.ButtonStyle.secondary, disabled=True)
+    async def _placeholder(self, inter: discord.Interaction, _btn: discord.ui.Button):
+        # jamais affiché; les vrais boutons sont ajoutés dynamiquement
+        await inter.response.defer()
 
-        # maj stats SQL (joueurs + croupier cliquent)
-        await update_stats_after_game(
-            guild_id=inter.guild.id,
-            starter_id=self.game.starter_id,
-            joiner_id=self.game.joiner_id,
-            winner_id=winner_id,
-            loser_id=loser_id,
-            mise=self.game.mise,
-            commission=commission,
-            croupier_id=inter.user.id,  # <<<<<<<<<< le croupier qui a validé
-        )
+    async def on_click(self, inter: discord.Interaction, choice_code: str):
+        mapping = {
+            "side_rouge": "rouge",
+            "side_noir": "noir",
+            "side_pair": "pair",
+            "side_impair": "impair",
+            "side_1_18": "1-18",
+            "side_19_36": "19-36",
+        }
+        self.game.starter_choice = mapping[choice_code]
+        self.game.state = "waiting_opponent"
+        # Afficher view de join
+        await inter.response.edit_message(embed=build_wait_embed(self.game), view=JoinView(self.game))
 
-        # MAJ des 2 leaderboards collants
-        await update_both_leaderboards(inter.guild)
+    async def interaction_check_component(self, inter: discord.Interaction, component_id: str):
+        # route les custom_id
+        if component_id.startswith("side_"):
+            await self.on_click(inter, component_id)
+            return True
+        return False
 
-        # fin de partie
-        active_games.pop(self.game.channel_id, None)
+    async def callback(self, inter: discord.Interaction):
+        # Not used
+        await inter.response.defer()
 
-# ------------------ Stats & Leaderboards ------------------
-async def update_stats_after_game(
-    guild_id: int,
-    starter_id: int,
-    joiner_id: int,
-    winner_id: Optional[int],
-    loser_id: Optional[int],
-    mise: int,
-    commission: int,
-    croupier_id: int,
-):
-    pot = mise * 2
-    gain = pot - commission   # montant payé au gagnant
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        # total bet + net + wins/losses + best_gain
-        for uid in (starter_id, joiner_id):
-            await db.execute(
-                """INSERT INTO lb_users (guild_id, user_id, total_bet, net, wins, losses, best_gain)
-                   VALUES (?, ?, ?, 0, 0, 0, 0)
-                   ON CONFLICT(guild_id, user_id) DO NOTHING""",
-                (guild_id, uid, mise)
-            )
-            await db.execute(
-                "UPDATE lb_users SET total_bet = total_bet + ? WHERE guild_id=? AND user_id=?",
-                (mise, guild_id, uid)
-            )
-
-        if winner_id and loser_id:
-            # gagnant : net += (gain - mise)  (car il a misé sa mise, récupère gain total)
-            await db.execute(
-                "UPDATE lb_users SET net = net + ?, wins = wins + 1, best_gain = MAX(best_gain, ?) WHERE guild_id=? AND user_id=?",
-                (gain - mise, gain, guild_id, winner_id)
-            )
-            # perdant : net -= mise
-            await db.execute(
-                "UPDATE lb_users SET net = net - ?, losses = losses + 1 WHERE guild_id=? AND user_id=?",
-                (mise, guild_id, loser_id)
-            )
-
-        # croupier : commission_total +1
-        await db.execute(
-            """INSERT INTO lb_croupier_users (guild_id, user_id, commission_total, tx_count)
-               VALUES (?, ?, ?, 1)
-               ON CONFLICT(guild_id, user_id)
-               DO UPDATE SET commission_total = commission_total + excluded.commission_total,
-                             tx_count = tx_count + 1""",
-            (guild_id, croupier_id, commission)
-        )
-
-        await db.commit()
-
-def fmt_players_leaderboard_rows(rows):
-    lines = []
-    total = 0
-    for idx, (uid, total_bet, net) in enumerate(rows, start=1):
-        total += total_bet
-        lines.append(f"**{idx}.** <@{uid}> — misé **{total_bet}k** · net **{net}k**")
-    lines.append(f"\n**Total misé (serveur) : {total}k**")
-    return "\n".join(lines)
-
-def fmt_croupiers_leaderboard_rows(rows):
-    lines = []
-    total_comm = 0
-    for idx, (uid, comm, cnt) in enumerate(rows, start=1):
-        total_comm += comm
-        lines.append(f"**{idx}.** <@{uid}> — commission **{comm}k** · tables **{cnt}**")
-    lines.append(f"\n**Total commissions : {total_comm}k**")
-    return "\n".join(lines)
-
-async def get_or_create_sticky_message(guild: discord.Guild, kind: str) -> Optional[discord.Message]:
-    """kind: 'players' | 'croupiers'"""
-    if not LEADERBOARD_CHANNEL_ID:
-        return None
-    channel = guild.get_channel(LEADERBOARD_CHANNEL_ID)
-    if channel is None:
-        return None
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            "SELECT message_id FROM sticky_messages WHERE guild_id=? AND kind=?",
-            (guild.id, kind)
-        )
-        row = await cur.fetchone()
-
-    if row:
-        msg_id = int(row[0])
+    async def on_error(self, error: Exception, item: discord.ui.Item, inter: discord.Interaction):
         try:
-            msg = await channel.fetch_message(msg_id)
-            return msg
-        except discord.NotFound:
-            pass  # on recréera juste après
-
-    # créer nouveau message sticky
-    title = "🏅 Leaderboard" if kind == "players" else "🏅 Leaderboard Croupiers"
-    msg = await channel.send(embed=discord.Embed(title=title, description="(initialisation…)", color=0x8E44AD))
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """INSERT INTO sticky_messages (guild_id, kind, channel_id, message_id)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT(guild_id, kind) DO UPDATE SET channel_id=excluded.channel_id, message_id=excluded.message_id""",
-            (guild.id, kind, channel.id, msg.id)
-        )
-        await db.commit()
-    return msg
-
-async def update_players_leaderboard(guild: discord.Guild):
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            "SELECT user_id, total_bet, net FROM lb_users WHERE guild_id=? ORDER BY total_bet DESC, user_id ASC",
-            (guild.id,)
-        )
-        rows = await cur.fetchall()
-
-    desc = "Aucune donnée." if not rows else fmt_players_leaderboard_rows(rows)
-    embed = discord.Embed(title="🏅 Leaderboard", description=desc, color=0x9B59B6)
-    embed.set_footer(text=f"Dernière mise à jour : {datetime.now().strftime('%d/%m %H:%M')}")
-    msg = await get_or_create_sticky_message(guild, "players")
-    if msg:
-        try:
-            await msg.edit(embed=embed)
-        except discord.Forbidden:
+            await inter.response.send_message("Erreur d’interface.", ephemeral=True)
+        except:
             pass
 
-async def update_croupiers_leaderboard(guild: discord.Guild):
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            "SELECT user_id, commission_total, tx_count FROM lb_croupier_users WHERE guild_id=? ORDER BY commission_total DESC, tx_count DESC, user_id ASC",
-            (guild.id,)
-        )
-        rows = await cur.fetchall()
+    async def on_children_interaction(self, inter: discord.Interaction):
+        # hack to capture dynamic buttons
+        if isinstance(inter.data, dict) and "custom_id" in inter.data:
+            await self.interaction_check_component(inter, inter.data["custom_id"])
 
-    desc = "Aucune donnée." if not rows else fmt_croupiers_leaderboard_rows(rows)
-    embed = discord.Embed(title="🏅 Leaderboard Croupiers", description=desc, color=0x1ABC9C)
-    embed.set_footer(text=f"Dernière mise à jour : {datetime.now().strftime('%d/%m %H:%M')}")
-    msg = await get_or_create_sticky_message(guild, "croupiers")
-    if msg:
-        try:
-            await msg.edit(embed=embed)
-        except discord.Forbidden:
-            pass
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # override to route
+        if isinstance(interaction.data, dict) and "custom_id" in interaction.data:
+            return await super().interaction_check(interaction)
+        return await super().interaction_check(interaction)
 
-async def update_both_leaderboards(guild: discord.Guild):
-    await update_players_leaderboard(guild)
-    await update_croupiers_leaderboard(guild)
+class JoinView(discord.ui.View):
+    def __init__(self, game: Game):
+        super().__init__(timeout=300)
+        self.game = game
+        self.add_item(discord.ui.Button(label="Rejoindre la partie", style=discord.ButtonStyle.success, custom_id="join_game"))
 
-# ------------------ Commands ------------------
-@bot.tree.command(name="roulette", description="Créer ou rejoindre une roulette (le créateur choisit le duel et son camp)")
-@app_commands.describe(mise="Montant de la mise (en 'kamas', entier > 0)")
-async def roulette_cmd(inter: discord.Interaction, mise: int = 1000):
-    if mise <= 0:
-        await inter.response.send_message("La mise doit être un entier positif.", ephemeral=True)
-        return
+    async def interaction_check(self, inter: discord.Interaction) -> bool:
+        if inter.user.id == self.game.starter_id:
+            await inter.response.send_message("Tu ne peux pas rejoindre ta propre partie.", ephemeral=True)
+            return False
+        if self.game.joiner_id:
+            await inter.response.send_message("Un joueur a déjà rejoint.", ephemeral=True)
+            return False
+        return True
 
-    ch_id = inter.channel.id
-    g = active_games.get(ch_id)
+    @discord.ui.button(label="placeholder", style=discord.ButtonStyle.secondary, disabled=True)
+    async def _placeholder(self, inter: discord.Interaction, _btn: discord.ui.Button):
+        await inter.response.defer()
 
-    # créer une partie si aucune
-    if g is None:
-        g = RouletteGame(channel_id=ch_id, starter_id=inter.user.id, mise=mise)
-        active_games[ch_id] = g
-        await inter.response.send_message(embed=emb_choose_duel(g), view=DuelSelectView(g))
-        return
+    async def on_children_interaction(self, inter: discord.Interaction):
+        if isinstance(inter.data, dict) and inter.data.get("custom_id") == "join_game":
+            self.game.joiner_id = inter.user.id
+            self.game.state = "awaiting_croupier"
+            # Ping croupier
+            mention = f"<@&{ROLE_CROUPIER_ID}>" if ROLE_CROUPIER_ID else "@CROUPIER"
+            await inter.response.edit_message(embed=build_croupier_embed(self.game), view=CroupierValidateView(self.game))
+            try:
+                await inter.channel.send(f"{mention} — merci de **valider les mises**.", allowed_mentions=discord.AllowedMentions(roles=True))
+            except:
+                pass
 
-    # sinon tenter de rejoindre
-    if g.state != "wait_join" or g.joiner_id is not None:
-        await inter.response.send_message("Aucune partie disponible à rejoindre dans ce salon.", ephemeral=True)
-        return
-    if inter.user.id == g.starter_id:
-        await inter.response.send_message("Tu es déjà le créateur de cette partie.", ephemeral=True)
-        return
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return await super().interaction_check(interaction)
 
-    # attribuer le camp opposé
-    opposite = {
-        "rouge": "noir", "noir": "rouge",
-        "pair": "impair", "impair": "pair",
-        "1-18": "19-36", "19-36": "1-18",
-    }.get(g.choice, None)
-    if not opposite:
-        await inter.response.send_message("Partie invalide (camp du créateur manquant).", ephemeral=True)
-        return
+class CroupierValidateView(discord.ui.View):
+    def __init__(self, game: Game):
+        super().__init__(timeout=600)
+        self.game = game
+        self.add_item(discord.ui.Button(label="✅ Valider les mises (CROUPIER)", style=discord.ButtonStyle.success, custom_id="croupier_ok"))
+        self.add_item(discord.ui.Button(label="❌ Annuler", style=discord.ButtonStyle.danger, custom_id="cancel_game"))
 
-    g.joiner_id = inter.user.id
-    g.joiner_choice = opposite
-    g.state = "wait_croupier"
+    async def interaction_check(self, inter: discord.Interaction) -> bool:
+        if inter.data.get("custom_id") == "croupier_ok":
+            # restreindre au rôle croupier si fourni
+            if ROLE_CROUPIER_ID and discord.utils.get(inter.user.roles, id=ROLE_CROUPIER_ID) is None:
+                await inter.response.send_message("Réservé au rôle CROUPIER.", ephemeral=True)
+                return False
+        return True
 
-    # ping croupier **en dehors** de l'embed pour notifier
-    if ROLE_CROUPIER_ID:
-        await inter.channel.send(f"<@&{ROLE_CROUPIER_ID}> — merci de **valider les mises** pour lancer la roulette.")
+    async def on_children_interaction(self, inter: discord.Interaction):
+        cid = inter.data.get("custom_id")
+        if cid == "croupier_ok":
+            if self.game.croupier_validated:
+                await inter.response.send_message("Déjà validé.", ephemeral=True)
+                return
+            self.game.croupier_validated = True
+            # désactiver boutons
+            for c in self.children:
+                c.disabled = True
+            await inter.response.edit_message(embed=build_spinning_embed(self.game), view=self)
+            await run_spin_and_settle(inter, self.game)
+        elif cid == "cancel_game":
+            self.game.state = "done"
+            for c in self.children:
+                c.disabled = True
+            await inter.response.edit_message(embed=build_cancel_embed(self.game), view=self)
 
-    await inter.response.send_message(embed=emb_wait_croupier(g), view=ValidateView(g))
+# ========== Embeds ==========
+def build_start_embed(starter: discord.Member, stake: int) -> discord.Embed:
+    em = discord.Embed(
+        title="🎰 Roulette – Nouvelle partie",
+        description=f"Créateur : {starter.mention}\nMise : **{stake}**",
+        color=discord.Color.gold()
+    )
+    em.add_field(name="Étape 1", value="Choisis le **type de duel** :", inline=False)
+    return em
 
-@bot.tree.command(name="leaderboard", description="Afficher le leaderboard joueurs (et rafraîchir le sticky message)")
-async def leaderboard_cmd(inter: discord.Interaction):
-    await inter.response.defer(thinking=False)
-    await update_players_leaderboard(inter.guild)
-    # renvoyer aussi en direct
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            "SELECT user_id, total_bet, net FROM lb_users WHERE guild_id=? ORDER BY total_bet DESC, user_id ASC",
-            (inter.guild.id,)
-        )
-        rows = await cur.fetchall()
-    desc = "Aucune donnée." if not rows else fmt_players_leaderboard_rows(rows)
-    await inter.followup.send(embed=discord.Embed(title="🏅 Leaderboard", description=desc, color=0x9B59B6))
+def build_duel_embed(game: Game) -> discord.Embed:
+    labels = {
+        "couleur": "Rouge/Noir",
+        "pairimpair": "Pair/Impair",
+        "manque_passe": "1–18 / 19–36"
+    }
+    em = discord.Embed(
+        title="🎯 Choix du duel",
+        description=f"Type sélectionné : **{labels.get(game.duel_type,'?')}**\n"
+                    f"Choisis maintenant **ton camp**.",
+        color=discord.Color.blurple()
+    )
+    return em
 
-@bot.tree.command(name="croupierboard", description="Afficher le leaderboard croupiers (et rafraîchir le sticky message)")
-async def croupierboard_cmd(inter: discord.Interaction):
-    await inter.response.defer(thinking=False)
-    await update_croupiers_leaderboard(inter.guild)
-    # renvoyer aussi en direct
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            "SELECT user_id, commission_total, tx_count FROM lb_croupier_users WHERE guild_id=? ORDER BY commission_total DESC, tx_count DESC, user_id ASC",
-            (inter.guild.id,)
-        )
-        rows = await cur.fetchall()
-    desc = "Aucune donnée." if not rows else fmt_croupiers_leaderboard_rows(rows)
-    await inter.followup.send(embed=discord.Embed(title="🏅 Leaderboard Croupiers", description=desc, color=0x1ABC9C))
+def build_wait_embed(game: Game) -> discord.Embed:
+    em = discord.Embed(
+        title="⌛ En attente d’un second joueur",
+        description="Un joueur doit cliquer **Rejoindre la partie**.",
+        color=discord.Color.orange()
+    )
+    em.add_field(name="Duel", value=display_duel(game), inline=True)
+    em.add_field(name="Créateur", value=f"<@{game.starter_id}>", inline=True)
+    em.add_field(name="Mise", value=f"{game.stake}", inline=True)
+    return em
 
-# ------------------ Bot lifecycle ------------------
+def build_croupier_embed(game: Game) -> discord.Embed:
+    em = discord.Embed(
+        title="🎩 Validation Croupier requise",
+        description="Le croupier doit **valider les mises** pour lancer la roulette.",
+        color=discord.Color.green()
+    )
+    em.add_field(name="Duel", value=display_duel(game), inline=True)
+    em.add_field(name="Joueur 1", value=f"<@{game.starter_id}>", inline=True)
+    em.add_field(name="Joueur 2", value=f"<@{game.joiner_id}>", inline=True)
+    em.add_field(name="Mise (chaque joueur)", value=f"{game.stake}", inline=True)
+    em.add_field(name="Commission", value=f"{COMMISSION_PERCENT}% du pot", inline=True)
+    return em
+
+def build_spinning_embed(game: Game) -> discord.Embed:
+    em = discord.Embed(
+        title="🎡 La roulette tourne...",
+        description="Bonne chance !",
+        color=discord.Color.orange()
+    )
+    em.add_field(name="Duel", value=display_duel(game), inline=True)
+    if SPIN_GIF_URL:
+        em.set_image(url=SPIN_GIF_URL)
+    return em
+
+def build_result_embed(game: Game, n: int, color_word: str, winner_id: int, loser_id: int, commission: int) -> discord.Embed:
+    em = discord.Embed(
+        title=f"🎉 Résultat : {n} ({color_word})",
+        description=f"Gagnant : <@{winner_id}>\nPerdant : <@{loser_id}>",
+        color=discord.Color.green() if winner_id else discord.Color.red()
+    )
+    em.add_field(name="Duel", value=display_duel(game), inline=True)
+    pot = game.stake * 2
+    em.add_field(name="Pot", value=f"{pot}", inline=True)
+    em.add_field(name="Commission croupier", value=f"{commission} ({COMMISSION_PERCENT}%)", inline=True)
+    em.set_footer(text="Leaderboard mis à jour.")
+    return em
+
+def build_cancel_embed(game: Game) -> discord.Embed:
+    return discord.Embed(
+        title="🛑 Partie annulée",
+        description="Le croupier a annulé la partie.",
+        color=discord.Color.red()
+    )
+
+def display_duel(game: Game) -> str:
+    if game.duel_type == "couleur":
+        return f"Rouge/Noir — choix J1 : **{game.starter_choice}**"
+    if game.duel_type == "pairimpair":
+        return f"Pair/Impair — choix J1 : **{game.starter_choice}**"
+    return f"1–18 / 19–36 — choix J1 : **{game.starter_choice}**"
+
+# ========== Spin & rules ==========
+def spin_number() -> int:
+    return random.randint(0, 36)
+
+def color_of(n: int) -> str:
+    if n == 0: return "vert"
+    return "rouge" if n in RED_NUMBERS else "noir"
+
+def is_even(n: int) -> bool:
+    return n % 2 == 0
+
+def in_range_1_18(n: int) -> bool:
+    return 1 <= n <= 18
+
+async def run_spin_and_settle(inter: discord.Interaction, game: Game):
+    game.state = "spinning"
+    await asyncio.sleep(2.0)  # petit délai pour le "spin"
+    n = spin_number()
+    col = color_of(n)
+
+    # Determine winner
+    # starter_choice vs implicit other choice for joiner
+    if game.duel_type == "couleur":
+        starter_win = (game.starter_choice == col)
+    elif game.duel_type == "pairimpair":
+        if n == 0:
+            starter_win = False
+        else:
+            starter_win = (game.starter_choice == ("pair" if is_even(n) else "impair"))
+    else:
+        if n == 0:
+            starter_win = False
+        else:
+            starter_win = (game.starter_choice == ("1-18" if in_range_1_18(n) else "19-36"))
+
+    if starter_win:
+        winner_id, loser_id = game.starter_id, game.joiner_id
+    else:
+        winner_id, loser_id = game.joiner_id, game.starter_id
+
+    pot = game.stake * 2
+    commission = (pot * COMMISSION_PERCENT) // 100
+
+    # Persist
+    await record_game_and_update_stats(game, winner_id, loser_id, n, col, commission)
+
+    # Show result
+    em = build_result_embed(game, n, col, winner_id, loser_id, commission)
+    await inter.edit_original_response(embed=em, view=None)
+
+    # Leaderboard update
+    guild = inter.guild
+    await update_leaderboard(guild)
+
+    # mark done
+    game.state = "done"
+    ACTIVE_GAMES.pop(game.message_id, None)
+
+# ========== Slash command ==========
+@bot.tree.command(name="roulette", description="Créer une partie de roulette (duel)")
+@app_commands.describe(mise="Montant misé par joueur (kamas)")
+async def roulette_cmd(inter: discord.Interaction, mise: app_commands.Range[int, 1, 1_000_000]):
+    # réponse rapide pour éviter Unknown interaction
+    await inter.response.send_message("🎰 Partie créée ! Regarde le message ci-dessous.", ephemeral=True)
+
+    starter = inter.user
+    g = Game(guild_id=inter.guild.id, channel_id=inter.channel.id, starter_id=starter.id, stake=mise)
+
+    msg = await inter.channel.send(embed=build_start_embed(starter, mise), view=DuelSelectView(g))
+    g.message_id = msg.id
+    ACTIVE_GAMES[msg.id] = g
+
+# ========== Bot lifecycle ==========
 @bot.event
 async def on_ready():
-    print(f"Connecté en tant que {bot.user} (ID: {bot.user.id})")
+    await db_init()
     try:
-        synced = await bot.tree.sync()
-        print(f"Slash commands sync: {len(synced)}")
+        await bot.tree.sync()
     except Exception as e:
         print("Sync error:", e)
-    # Init/refresh sticky boards (facultatif au boot)
-    if LEADERBOARD_CHANNEL_ID:
-        for guild in bot.guilds:
-            await update_both_leaderboards(guild)
+    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
-# ------------------ Run ------------------
-if not TOKEN:
-    raise SystemExit("DISCORD_TOKEN manquant dans les variables d'environnement.")
-bot.run(TOKEN)
+if __name__ == "__main__":
+    if not TOKEN:
+        raise SystemExit("DISCORD_TOKEN manquant")
+    bot.run(TOKEN)
