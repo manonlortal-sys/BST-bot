@@ -44,6 +44,9 @@ async def setup_hook():
             print("Slash commands globally synced")
     except Exception as e:
         print(f"Sync error: {e}")
+        
+from cogs.ping import PingButtonsView  # import la classe
+bot.add_view(PingButtonsView())        # ré-attache les callbacks au boot
 
 @bot.event
 async def on_ready():
