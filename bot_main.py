@@ -1,10 +1,9 @@
 import os
 import threading
 from flask import Flask
+
 import discord
 from discord.ext import commands
-import importlib
-import pathlib
 
 # ========= Flask keep-alive (Render) =========
 app = Flask(__name__)
@@ -24,39 +23,30 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 if not DISCORD_TOKEN:
     raise SystemExit("Missing DISCORD_TOKEN environment variable.")
 
-# Guild IDs pour sync ciblée (optionnel)
+# Facultatif: liste d'IDs de serveurs pour sync ciblée ("123,456")
 _gids = os.getenv("GUILD_IDS", "").strip()
 GUILD_IDS = [int(x) for x in _gids.split(",") if x.strip().isdigit()] if _gids else []
 
-# Intents minimalistes pour slash commands
 intents = discord.Intents.default()
 intents.guilds = True
 
-# Bot sans préfixe, uniquement slash commands
-bot = commands.Bot(command_prefix=None, intents=intents)
+# --- Changement minimal pour slash-only ---
+bot = commands.Bot(command_prefix=None, intents=intents)  # plus de "!" puisque slash-only
 
 @bot.event
 async def setup_hook():
-    # 1) Enregistrer les vues persistantes (ex: PingButtonsView)
+    # IMPORTANT: enregistrer la vue persistante pour les boutons déjà envoyés avant un reboot
     try:
         from cogs.ping import PingButtonsView
         bot.add_view(PingButtonsView())
     except Exception as e:
         print("Warning: unable to register persistent views:", e)
 
-    # 2) Charger automatiquement tous les cogs dans le dossier cogs/
-    cogs_path = pathlib.Path("cogs")
-    for file in cogs_path.glob("*.py"):
-        if file.name.startswith("_"):  # ignorer __init__.py ou fichiers privés
-            continue
-        cog_name = f"cogs.{file.stem}"
-        try:
-            await bot.load_extension(cog_name)
-            print(f"Loaded cog: {cog_name}")
-        except Exception as e:
-            print(f"Failed to load cog {cog_name}: {e}")
+    # Charger les cogs
+    await bot.load_extension("cogs.ping")  # garde ton cog ping intact
+    await bot.load_extension("cogs.roulette")  # on ajoute ton cog roulette
 
-    # 3) Synchroniser les slash commands
+    # Sync des commandes slash (scope ciblé si GUILD_IDS fournis)
     try:
         if GUILD_IDS:
             for gid in GUILD_IDS:
