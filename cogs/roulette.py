@@ -103,7 +103,7 @@ async def update_leaderboard(bot, guild):
 class Roulette(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.active_duels = {}  # guild_id -> duel en cours
+        self.active_duels = {}  # guild_id -> duel en cours (pas bloquant ici, mais à usage futur)
 
     @discord.app_commands.command(name="roulette", description="Lancer une roulette à deux joueurs (avec croupier)")
     @discord.app_commands.describe(mise="Mise en kamas (entier positif, minimum 1000)")
@@ -119,47 +119,57 @@ class Roulette(commands.Cog):
             color=discord.Color.gold()
         )
         embed_main.set_footer(text="⌛ En attente du type de duel et du choix du camp…")
+        # Première réponse (obligatoire)
         await interaction.response.send_message(embed=embed_main)
         main_msg = await interaction.original_response()
 
-        # ---------- Choix type duel ----------
+        # ---------- Choix type duel (boutons publics, seuls les clics du créateur sont acceptés) ----------
         type_view = discord.ui.View(timeout=120)
         duel_type_result = {}
 
         async def select_type(inter2: discord.Interaction, t: str):
+            # Seul le créateur peut effectuer cette action
+            if inter2.user.id != interaction.user.id:
+                await inter2.response.send_message("❌ Seul le créateur peut choisir le type de duel.", ephemeral=True)
+                return
             duel_type_result['type'] = t
+            await inter2.response.defer()  # acknowledge
             type_view.stop()
-            await inter2.response.defer()  # répond pour éviter timeout
 
         for label,t in [("🔴⚫ Rouge / Noir","couleur"),("⚖️ Pair / Impair","parite"),("1️⃣-18 / 19-36","intervalle")]:
             btn = discord.ui.Button(label=label, style=discord.ButtonStyle.primary)
+            # safe closure capture using default arg
             btn.callback = lambda inter, t=t: asyncio.create_task(select_type(inter, t))
             type_view.add_item(btn)
 
         embed_type = discord.Embed(
             title="🎯 Choisis le type de duel",
-            description="Clique sur un bouton ci-dessous pour choisir le type de défi !",
+            description="Clique sur un bouton ci-dessous pour choisir le type de défi ! (Seul le créateur peut cliquer.)",
             color=discord.Color.orange()
         )
-        await interaction.channel.send(embed=embed_type, view=type_view)
+        # Envoi public (les autres voient les boutons mais seront bloqués par le callback)
+        await interaction.followup.send(embed=embed_type, view=type_view)
         await type_view.wait()
         if 'type' not in duel_type_result:
             return await main_msg.edit(content="⏳ Duel annulé (aucun type choisi).", embed=None, view=None)
 
         duel_type = duel_type_result['type']
 
-        # ---------- Choix camp ----------
+        # ---------- Choix camp (boutons publics, mêmes règles) ----------
         camp_view = discord.ui.View(timeout=120)
         camp_choice = {}
 
         async def select_camp(inter2: discord.Interaction, c: str):
+            if inter2.user.id != interaction.user.id:
+                await inter2.response.send_message("❌ Seul le créateur peut choisir le camp.", ephemeral=True)
+                return
             camp_choice['camp'] = c
-            camp_view.stop()
             await inter2.response.defer()
+            camp_view.stop()
 
-        if duel_type=="couleur":
+        if duel_type == "couleur":
             options = [("🔴 Rouge","rouge"),("⚫ Noir","noir")]
-        elif duel_type=="parite":
+        elif duel_type == "parite":
             options = [("Pair","pair"),("Impair","impair")]
         else:
             options = [("1-18","1-18"),("19-36","19-36")]
@@ -171,10 +181,10 @@ class Roulette(commands.Cog):
 
         embed_camp = discord.Embed(
             title="🎯 Choisis ton camp",
-            description="Clique sur un bouton ci-dessous pour sélectionner ton camp.",
+            description="Sélectionne ton camp. (Seul le créateur peut cliquer sur ces boutons.)",
             color=discord.Color.orange()
         )
-        await interaction.channel.send(embed=embed_camp, view=camp_view)
+        await interaction.followup.send(embed=embed_camp, view=camp_view)
         await camp_view.wait()
         if 'camp' not in camp_choice:
             return await main_msg.edit(content="⏳ Duel annulé (aucun camp choisi).", embed=None, view=None)
@@ -192,13 +202,13 @@ class Roulette(commands.Cog):
         joiner_result = {}
 
         async def join_callback(inter2: discord.Interaction):
-            if inter2.user.id==interaction.user.id:
+            if inter2.user.id == interaction.user.id:
                 await inter2.response.send_message("Tu es déjà le créateur.", ephemeral=True)
                 return
             if joiner_result.get('user'):
                 await inter2.response.send_message("Un adversaire a déjà rejoint.", ephemeral=True)
                 return
-            joiner_result['user']=inter2.user
+            joiner_result['user'] = inter2.user
             await inter2.response.send_message(f"{inter2.user.mention} a rejoint !", ephemeral=True)
             join_view.stop()
 
@@ -226,7 +236,8 @@ class Roulette(commands.Cog):
         validated = {}
 
         async def val_callback(inter2: discord.Interaction):
-            if CROUPIER_ROLE_ID and not any(r.id==CROUPIER_ROLE_ID for r in inter2.user.roles):
+            # Vérifie le rôle croupier dans les rôles de l'utilisateur
+            if CROUPIER_ROLE_ID and not any(r.id == CROUPIER_ROLE_ID for r in inter2.user.roles):
                 await inter2.response.send_message("Réservé au croupier.", ephemeral=True)
                 return
             validated['c'] = inter2.user
@@ -237,14 +248,24 @@ class Roulette(commands.Cog):
         btn_val.callback = val_callback
         val_view.add_item(btn_val)
 
-        pot_total = mise*2
-        commission = int(round(pot_total*(COMMISSION_PERCENT/100.0)))
+        pot_total = mise * 2
+        commission = int(round(pot_total * (COMMISSION_PERCENT / 100.0)))
         gain_net = pot_total - commission
 
         embed_main.add_field(name="👤 Joueurs", value=f"Créateur : {interaction.user.mention}\nAdversaire : {joiner.mention}", inline=False)
         embed_main.add_field(name="💰 Commission croupier", value=f"{commission}k", inline=True)
         embed_main.add_field(name="💸 Gain potentiel", value=f"{gain_net}k", inline=True)
-        await interaction.channel.send(f"📢 {discord.Object(id=CROUPIER_ROLE_ID).mention} un croupier doit valider les mises !")
+
+        # Ping role croupier — récupère le Role si possible, fallback sinon
+        mention_role = None
+        try:
+            role = interaction.guild.get_role(CROUPIER_ROLE_ID) if CROUPIER_ROLE_ID else None
+            mention_role = role.mention if role else f"<@&{CROUPIER_ROLE_ID}>"
+        except Exception:
+            mention_role = f"<@&{CROUPIER_ROLE_ID}>"
+
+        # Envoie le ping du croupier en message séparé
+        await interaction.channel.send(f"📢 {mention_role} un croupier doit valider les mises !")
         await main_msg.edit(embed=embed_main, view=val_view)
         await val_view.wait()
         if 'c' not in validated:
@@ -257,39 +278,42 @@ class Roulette(commands.Cog):
         if SPIN_GIF_URL:
             spin_embed.set_image(url=SPIN_GIF_URL)
         spin_msg = await interaction.channel.send(embed=spin_embed)
-        for i in range(5,0,-1):
+        for i in range(5, 0, -1):
             await spin_msg.edit(content=f"🎰 Roulettes en cours… {i}")
             await asyncio.sleep(1)
 
-        n = random.randint(0,36)
-        color = "vert" if n==0 else ("rouge" if n in RED_NUMBERS else "noir")
-        parity = "pair" if n!=0 and n%2==0 else "impair"
-        interval = "1-18" if 1<=n<=18 else ("19-36" if 19<=n<=36 else "0")
+        n = random.randint(0, 36)
+        color = "vert" if n == 0 else ("rouge" if n in RED_NUMBERS else "noir")
+        parity = "pair" if n != 0 and n % 2 == 0 else "impair"
+        interval = "1-18" if 1 <= n <= 18 else ("19-36" if 19 <= n <= 36 else "0")
 
         def starter_wins():
-            if duel_type=="couleur": return starter_choice==color
-            if duel_type=="parite": return starter_choice==parity
-            if duel_type=="intervalle": return starter_choice==interval
+            if duel_type == "couleur":
+                return starter_choice == color
+            if duel_type == "parite":
+                return starter_choice == parity
+            if duel_type == "intervalle":
+                return starter_choice == interval
             return False
 
         winner = interaction.user if starter_wins() else joiner
-        loser = joiner if winner==interaction.user else interaction.user
+        loser = joiner if winner == interaction.user else interaction.user
 
         # ---------- Résultat final ----------
         embed_main.clear_fields()
         embed_main.title = "✅ **Résultat de la roulette**"
-        embed_main.color = discord.Color.green() if winner==interaction.user else discord.Color.red()
+        embed_main.color = discord.Color.green() if winner == interaction.user else discord.Color.red()
         embed_main.add_field(name="🎯 Nombre tiré", value=f"{n} ({color}) — {parity} — {interval}", inline=False)
         embed_main.add_field(name="🏆 Gagnant", value=winner.mention, inline=True)
         embed_main.add_field(name="💸 Gain net", value=f"{gain_net}k", inline=True)
         embed_main.add_field(name="💰 Commission croupier", value=f"{commission}k", inline=False)
         embed_main.add_field(name="👤 Joueurs", value=f"Créateur : {interaction.user.mention} ({starter_choice})\nAdversaire : {joiner.mention}", inline=False)
-        embed_main.add_field(name="🎩 Croupier", value=croupier_user.mention, inline=True)
+        embed_main.add_field(name="🎩 Croupier", value=croupier_user.mention if croupier_user else "—", inline=True)
         await main_msg.edit(embed=embed_main, view=None)
 
         # ---------- Update stats + leaderboard ----------
-        update_stats(guild_id, interaction.user.id, mise=mise, net=(gain_net-mise) if winner==interaction.user else -mise, victoire=(winner==interaction.user))
-        update_stats(guild_id, joiner.id, mise=mise, net=(gain_net-mise) if winner==joiner else -mise, victoire=(winner==joiner))
+        update_stats(guild_id, interaction.user.id, mise=mise, net=(gain_net - mise) if winner == interaction.user else -mise, victoire=(winner == interaction.user))
+        update_stats(guild_id, joiner.id, mise=mise, net=(gain_net - mise) if winner == joiner else -mise, victoire=(winner == joiner))
         update_stats(guild_id, croupier_user.id, commission=commission)
         await update_leaderboard(self.bot, interaction.guild)
 
