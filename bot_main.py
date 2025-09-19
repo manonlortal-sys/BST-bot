@@ -27,26 +27,31 @@ if not DISCORD_TOKEN:
 _gids = os.getenv("GUILD_IDS", "").strip()
 GUILD_IDS = [int(x) for x in _gids.split(",") if x.strip().isdigit()] if _gids else []
 
+LEADERBOARD_CHANNEL_ID = int(os.getenv("LEADERBOARD_CHANNEL_ID", "0"))
+
 intents = discord.Intents.default()
 intents.guilds = True
+intents.members = True  # nécessaire pour afficher les noms des joueurs
 
-# --- Changement minimal pour slash-only ---
-bot = commands.Bot(command_prefix=None, intents=intents)  # plus de "!" puisque slash-only
+bot = commands.Bot(command_prefix="!", intents=intents)  # command_prefix ignoré pour slashs
 
 @bot.event
 async def setup_hook():
-    # IMPORTANT: enregistrer la vue persistante pour les boutons déjà envoyés avant un reboot
+    # ========= Charger les views persistantes =========
     try:
         from cogs.ping import PingButtonsView
         bot.add_view(PingButtonsView())
     except Exception as e:
         print("Warning: unable to register persistent views:", e)
 
-    # Charger les cogs
-    await bot.load_extension("cogs.ping")  # garde ton cog ping intact
-    await bot.load_extension("cogs.roulette")  # on ajoute ton cog roulette
+    # ========= Charger les cogs =========
+    try:
+        await bot.load_extension("cogs.ping")
+        await bot.load_extension("cogs.roulette")
+    except Exception as e:
+        print("Error loading cogs:", e)
 
-    # Sync des commandes slash (scope ciblé si GUILD_IDS fournis)
+    # ========= Sync des commandes slash =========
     try:
         if GUILD_IDS:
             for gid in GUILD_IDS:
@@ -61,6 +66,17 @@ async def setup_hook():
 @bot.event
 async def on_ready():
     print(f"Connecté en tant que {bot.user} (ID: {bot.user.id})")
+    # Créer le message leaderboard si nécessaire
+    if LEADERBOARD_CHANNEL_ID:
+        channel = bot.get_channel(LEADERBOARD_CHANNEL_ID)
+        if channel:
+            try:
+                # Vérifie s’il existe déjà un message, sinon créer un message vide pour les leaderboards
+                messages = await channel.history(limit=10).flatten()
+                if not any("Leaderboard" in (m.content or "") for m in messages):
+                    await channel.send("📊 **Leaderboard initialisé**")
+            except Exception as e:
+                print("Erreur création message leaderboard :", e)
 
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)
