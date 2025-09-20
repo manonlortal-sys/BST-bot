@@ -259,14 +259,38 @@ class PingButtonsView(discord.ui.View):
         await self._handle_click(interaction, side="Def2")
 
     @discord.ui.button(label="TEST (Admin)", style=discord.ButtonStyle.secondary)
-    async def btn_test(self, interaction: discord.Interaction, button: discord.ui.Button):
-        admin_roles = [r.id for r in interaction.user.roles if r.permissions.administrator]
-        if not admin_roles:
-            await interaction.response.send_message(
-                "Bouton réservé aux admins.", ephemeral=True
-            )
-            return
-        await self._handle_click(interaction, side="Test")
+async def btn_test(self, interaction: discord.Interaction, button: discord.ui.Button):
+    admin_roles = [r.id for r in interaction.user.roles if r.permissions.administrator]
+    if not admin_roles:
+        await interaction.response.send_message(
+            "Bouton réservé aux administrateurs.", ephemeral=True
+        )
+        return
+
+    try:
+        await interaction.response.defer(ephemeral=True, thinking=False)
+    except Exception:
+        pass
+
+    guild = interaction.guild
+    if guild is None or ALERT_CHANNEL_ID == 0:
+        return
+
+    alert_channel = guild.get_channel(ALERT_CHANNEL_ID)
+    if not isinstance(alert_channel, discord.TextChannel):
+        return
+
+    role_id = int(os.getenv("ROLE_TEST_ID", "0"))
+    role_mention = f"<@&{role_id}>" if role_id != 0 else ""
+    content = f"{role_mention} — **Percepteur attaqué !** Merci de vous connecter." if role_mention else "**Percepteur attaqué !** Merci de vous connecter."
+    
+    msg = await alert_channel.send(content)
+    emb = await build_ping_embed(msg, creator=interaction.user)
+    await msg.edit(embed=emb)
+    upsert_message(msg, creator_id=interaction.user.id)
+    await interaction.followup.send("✅ Alerte envoyée.", ephemeral=True)
+
+
 
     async def _handle_click(self, interaction: discord.Interaction, side: str):
         await interaction.response.defer(ephemeral=True, thinking=False)
