@@ -202,12 +202,12 @@ class PingButtonsView(discord.ui.View):
         await msg.edit(embed=emb)
         upsert_message(msg)
 
-class PingCog(commands.Cog):
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
-        create_db()
+    class PingCog(commands.Cog):
+        def __init__(self, bot: commands.Bot):
+            self.bot = bot
+            create_db()
 
-@app_commands.command(name="pingpanel", description="Publier le panneau de ping des percepteurs (boutons Def/Def2).")
+    @app_commands.command(name="pingpanel", description="Publier le panneau de ping des percepteurs (boutons Def/Def2).")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def pingpanel(self, interaction: discord.Interaction):
         try:
