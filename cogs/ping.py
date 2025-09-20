@@ -19,7 +19,6 @@ EMOJI_VICTORY = "🏆"
 EMOJI_DEFEAT  = "❌"
 EMOJI_INCOMP  = "😡"
 EMOJI_JOIN    = "👍"
-EMOJI_PING    = "⚡"
 
 BUCKETS = [
     ("🌅 Matin (6–10)", 6, 10),
@@ -79,7 +78,6 @@ def with_db(func):
             con.close()
     return wrapper
 
-# ---------- DB opérations ----------
 @with_db
 def upsert_message(con: sqlite3.Connection, message: discord.Message, creator_id: Optional[int] = None):
     cur = con.cursor()
@@ -129,81 +127,8 @@ def set_leaderboard_post(con: sqlite3.Connection, guild_id: int, channel_id: int
         ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id, message_id=excluded.message_id
     """, (guild_id, channel_id, message_id, type_))
 
-@with_db
-def agg_totals_all(con: sqlite3.Connection, guild_id: int) -> Tuple[int,int,int,int]:
-    cur = con.cursor()
-    cur.execute("""
-        SELECT
-          SUM(CASE WHEN outcome='win'  THEN 1 ELSE 0 END),
-          SUM(CASE WHEN outcome='loss' THEN 1 ELSE 0 END),
-          SUM(CASE WHEN incomplete=1  THEN 1 ELSE 0 END),
-          COUNT(*)
-        FROM messages WHERE guild_id=?
-    """, (guild_id,))
-    w,l,inc,tot = cur.fetchone()
-    return (w or 0, l or 0, inc or 0, tot or 0)
-
-@with_db
-def agg_totals_7d(con: sqlite3.Connection, guild_id: int) -> Tuple[int,int,int,int]:
-    since = utcnow_i() - 7*24*3600
-    cur = con.cursor()
-    cur.execute("""
-        SELECT
-          SUM(CASE WHEN outcome='win'  THEN 1 ELSE 0 END),
-          SUM(CASE WHEN outcome='loss' THEN 1 ELSE 0 END),
-          SUM(CASE WHEN incomplete=1  THEN 1 ELSE 0 END),
-          COUNT(*)
-        FROM messages WHERE guild_id=? AND created_ts>=?
-    """, (guild_id, since))
-    w,l,inc,tot = cur.fetchone()
-    return (w or 0, l or 0, inc or 0, tot or 0)
-
-@with_db
-def top_defenders(con: sqlite3.Connection, guild_id: int, limit: int = 20) -> List[Tuple[int,int]]:
-    cur = con.cursor()
-    cur.execute("""
-        SELECT p.user_id, COUNT(*) as cnt
-        FROM participants p
-        JOIN messages m ON m.message_id=p.message_id
-        WHERE m.guild_id=?
-        GROUP BY p.user_id
-        ORDER BY cnt DESC
-        LIMIT ?
-    """, (guild_id, limit))
-    return [(row["user_id"], row["cnt"]) for row in cur.fetchall()]
-
-@with_db
-def top_pingeurs(con: sqlite3.Connection, guild_id: int, limit: int = 20) -> List[Tuple[int,int]]:
-    cur = con.cursor()
-    cur.execute("""
-        SELECT creator_id, COUNT(*) as cnt
-        FROM messages
-        WHERE guild_id=? AND creator_id IS NOT NULL
-        GROUP BY creator_id
-        ORDER BY cnt DESC
-        LIMIT ?
-    """, (guild_id, limit))
-    return [(row["creator_id"], row["cnt"]) for row in cur.fetchall()]
-
-@with_db
-def hourly_split_7d(con: sqlite3.Connection, guild_id: int) -> List[int]:
-    since = utcnow_i() - 7*24*3600
-    cur = con.cursor()
-    cur.execute("SELECT created_ts FROM messages WHERE guild_id=? AND created_ts>=?", (guild_id, since))
-    rows = cur.fetchall()
-    counts = [0,0,0,0]
-    for r in rows:
-        h = datetime.fromtimestamp(r["created_ts"], tz=timezone.utc).hour
-        if 6 <= h < 10: counts[0]+=1
-        elif 10 <= h < 18: counts[1]+=1
-        elif 18 <= h < 24: counts[2]+=1
-        else: counts[3]+=1
-    return counts
-
-# ---------- Embed constructeur ----------
 async def build_ping_embed(msg: discord.Message, creator: Optional[discord.Member] = None) -> discord.Embed:
     reactions = {str(r.emoji): r for r in msg.reactions}
-
     win  = (EMOJI_VICTORY in reactions and reactions[EMOJI_VICTORY].count > 0)
     loss = (EMOJI_DEFEAT  in reactions and reactions[EMOJI_DEFEAT].count  > 0)
 
@@ -244,7 +169,6 @@ async def build_ping_embed(msg: discord.Message, creator: Optional[discord.Membe
     embed.set_footer(text="Ajoutez vos réactions : 🏆 gagné • ❌ perdu • 😡 incomplète • 👍 j'ai participé")
     return embed
 
-# ---------- View boutons ----------
 class PingButtonsView(discord.ui.View):
     def __init__(self, bot: commands.Bot):
         super().__init__(timeout=None)
@@ -258,57 +182,17 @@ class PingButtonsView(discord.ui.View):
     async def btn_def2(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle_click(interaction, side="Def2")
 
-    @discord.ui.button(label="TEST (Admin)", style=discord.ButtonStyle.secondary)
-async def btn_test(self, interaction: discord.Interaction, button: discord.ui.Button):
-    admin_roles = [r.id for r in interaction.user.roles if r.permissions.administrator]
-    if not admin_roles:
-        await interaction.response.send_message(
-            "Bouton réservé aux administrateurs.", ephemeral=True
-        )
-        return
-
-    try:
-        await interaction.response.defer(ephemeral=True, thinking=False)
-    except Exception:
-        pass
-
-    guild = interaction.guild
-    if guild is None or ALERT_CHANNEL_ID == 0:
-        return
-
-    alert_channel = guild.get_channel(ALERT_CHANNEL_ID)
-    if not isinstance(alert_channel, discord.TextChannel):
-        return
-
-    role_id = int(os.getenv("ROLE_TEST_ID", "0"))
-    role_mention = f"<@&{role_id}>" if role_id != 0 else ""
-    content = f"{role_mention} — **Percepteur attaqué !** Merci de vous connecter." if role_mention else "**Percepteur attaqué !** Merci de vous connecter."
-    
-    msg = await alert_channel.send(content)
-    emb = await build_ping_embed(msg, creator=interaction.user)
-    await msg.edit(embed=emb)
-    upsert_message(msg, creator_id=interaction.user.id)
-    await interaction.followup.send("✅ Alerte envoyée.", ephemeral=True)
-
-
-
     async def _handle_click(self, interaction: discord.Interaction, side: str):
-        await interaction.response.defer(ephemeral=True, thinking=False)
+        await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         if guild is None or ALERT_CHANNEL_ID == 0:
             return
+
         alert_channel = guild.get_channel(ALERT_CHANNEL_ID)
         if not isinstance(alert_channel, discord.TextChannel):
             return
 
-        if side == "Def":
-            role_id = ROLE_DEF_ID
-        elif side == "Def2":
-            role_id = ROLE_DEF2_ID
-        elif side == "Test":
-            role_id = int(os.getenv("ROLE_TEST_ID", "0"))
-        else:
-            return
+        role_id = ROLE_DEF_ID if side=="Def" else ROLE_DEF2_ID
         if role_id == 0:
             return
 
@@ -316,22 +200,20 @@ async def btn_test(self, interaction: discord.Interaction, button: discord.ui.Bu
         msg = await alert_channel.send(f"{role_mention} — **Percepteur attaqué !** Merci de vous connecter.")
         emb = await build_ping_embed(msg, creator=interaction.user)
         await msg.edit(embed=emb)
-        upsert_message(msg, creator_id=interaction.user.id)
-        await interaction.followup.send("✅ Alerte envoyée.", ephemeral=True)
+        upsert_message(msg)
 
-# ---------- Cog principal ----------
 class PingCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         create_db()
-        self._pending_update_def: Dict[int, asyncio.Task] = {}
-        self._pending_update_ping: Dict[int, asyncio.Task] = {}
 
-    # Commande /pingpanel
-    @app_commands.command(name="pingpanel", description="Publier le panneau de ping des percepteurs (boutons Def/Def2).")
+@app_commands.command(name="pingpanel", description="Publier le panneau de ping des percepteurs (boutons Def/Def2).")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def pingpanel(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True, thinking=False)
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=False)
+        except Exception:
+            pass
         view = PingButtonsView(self.bot)
         embed = discord.Embed(
             title="📣 Bot de Ping",
@@ -383,26 +265,5 @@ class PingCog(commands.Cog):
         except Exception as e:
             print("ping embed update error:", e)
 
-        await self._schedule_update_def(guild)
-        await self._schedule_update_ping(guild)
-
-    # ---------- Planification mise à jour leaderboard ----------
-    async def _schedule_update_def(self, guild: discord.Guild):
-        if guild.id in self._pending_update_def and not self._pending_update_def[guild.id].done(): return
-        async def _delayed():
-            await asyncio.sleep(1.0)
-            try: await self._update_leaderboard_def(guild)
-            except Exception as e: print("leaderboard update def error:", e)
-        self._pending_update_def[guild.id] = asyncio.create_task(_delayed())
-
-    async def _schedule_update_ping(self, guild: discord.Guild):
-        if guild.id in self._pending_update_ping and not self._pending_update_ping[guild.id].done(): return
-        async def _delayed():
-            await asyncio.sleep(1.0)
-            try: await self._update_leaderboard_ping(guild)
-            except Exception as e: print("leaderboard update ping error:", e)
-        self._pending_update_ping[guild.id] = asyncio.create_task(_delayed())
-
-# ---------- Ajout du cog au bot ----------
 async def setup(bot: commands.Bot):
     await bot.add_cog(PingCog(bot))
