@@ -252,6 +252,75 @@ async def build_ping_embed(msg: discord.Message, creator: Optional[discord.Membe
     return embed
 
 # ---------- View boutons ----------
+
+# ---------- View boutons ----------
+class PingButtonsView(discord.ui.View):
+    def __init__(self, bot: commands.Bot):
+        super().__init__(timeout=None)
+        self.bot = bot
+
+    @discord.ui.button(label="Guilde 1 (Def)", style=discord.ButtonStyle.primary)
+    async def btn_def(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle_click(interaction, side="Def")
+
+    @discord.ui.button(label="Guilde 2 (Def2)", style=discord.ButtonStyle.danger)
+    async def btn_def2(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle_click(interaction, side="Def2")
+
+    # ---------- Nouveau bouton Test ----------
+    @discord.ui.button(label="TEST (Admin)", style=discord.ButtonStyle.secondary)
+    async def btn_test(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Vérifie que l'utilisateur a le rôle admin
+        admin_roles = [r.id for r in interaction.user.roles if r.permissions.administrator]
+        if not admin_roles:
+            await interaction.response.send_message(
+                "Bouton réservé aux gens qui codent, espèce de gueux", ephemeral=True
+            )
+            return
+
+        await self._handle_click(interaction, side="Test")
+
+    async def _handle_click(self, interaction: discord.Interaction, side: str):
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=False)
+        except Exception:
+            pass
+
+        guild = interaction.guild
+        if guild is None or ALERT_CHANNEL_ID == 0:
+            return
+
+        alert_channel = guild.get_channel(ALERT_CHANNEL_ID)
+        if not isinstance(alert_channel, discord.TextChannel):
+            return
+
+        # Choix du rôle à ping selon le bouton
+        if side == "Def":
+            role_id = ROLE_DEF_ID
+        elif side == "Def2":
+            role_id = ROLE_DEF2_ID
+        elif side == "Test":
+            role_id = int(os.getenv("ROLE_TEST_ID", "0"))
+        else:
+            return
+
+        if role_id == 0:
+            return
+
+        role_mention = f"<@&{role_id}>"
+
+        # Envoi message alert
+        msg = await alert_channel.send(f"{role_mention} — **Percepteur attaqué !** Merci de vous connecter.")
+
+        # Ajouter l’embed avec déclencheur
+        emb = await build_ping_embed(msg, creator=interaction.user)
+        await msg.edit(embed=emb)
+
+        # DB pour leaderboard pingeur
+        upsert_message(msg, creator_id=interaction.user.id)
+
+        await interaction.followup.send("✅ Alerte envoyée.", ephemeral=True)
+        
 class PingButtonsView(discord.ui.View):
     def __init__(self, bot: commands.Bot):
         super().__init__(timeout=None)
