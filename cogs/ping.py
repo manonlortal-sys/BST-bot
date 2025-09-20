@@ -79,6 +79,7 @@ def with_db(func):
             con.close()
     return wrapper
 
+# ---------- DB opérations ----------
 @with_db
 def upsert_message(con: sqlite3.Connection, message: discord.Message, creator_id: Optional[int] = None):
     cur = con.cursor()
@@ -262,21 +263,16 @@ class PingButtonsView(discord.ui.View):
         admin_roles = [r.id for r in interaction.user.roles if r.permissions.administrator]
         if not admin_roles:
             await interaction.response.send_message(
-                "Bouton réservé aux gens qui codent, espèce de gueux", ephemeral=True
+                "Bouton réservé aux admins.", ephemeral=True
             )
             return
         await self._handle_click(interaction, side="Test")
 
     async def _handle_click(self, interaction: discord.Interaction, side: str):
-        try:
-            await interaction.response.defer(ephemeral=True, thinking=False)
-        except Exception:
-            pass
-
+        await interaction.response.defer(ephemeral=True, thinking=False)
         guild = interaction.guild
         if guild is None or ALERT_CHANNEL_ID == 0:
             return
-
         alert_channel = guild.get_channel(ALERT_CHANNEL_ID)
         if not isinstance(alert_channel, discord.TextChannel):
             return
@@ -307,13 +303,11 @@ class PingCog(commands.Cog):
         self._pending_update_def: Dict[int, asyncio.Task] = {}
         self._pending_update_ping: Dict[int, asyncio.Task] = {}
 
+    # Commande /pingpanel
     @app_commands.command(name="pingpanel", description="Publier le panneau de ping des percepteurs (boutons Def/Def2).")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def pingpanel(self, interaction: discord.Interaction):
-        try:
-            await interaction.response.defer(ephemeral=True, thinking=False)
-        except Exception:
-            pass
+        await interaction.response.defer(ephemeral=True, thinking=False)
         view = PingButtonsView(self.bot)
         embed = discord.Embed(
             title="📣 Bot de Ping",
@@ -385,90 +379,6 @@ class PingCog(commands.Cog):
             except Exception as e: print("leaderboard update ping error:", e)
         self._pending_update_ping[guild.id] = asyncio.create_task(_delayed())
 
-# ---------- Mise à jour leaderboard Défense ----------
-    async def _update_leaderboard_def(self, guild: discord.Guild):
-        if LEADERBOARD_CHANNEL_ID == 0: return
-        lb_channel = guild.get_channel(LEADERBOARD_CHANNEL_ID)
-        if not isinstance(lb_channel, discord.TextChannel): return
-
-        post = get_leaderboard_post(guild.id, "def")
-        msg = None
-        if post:
-            ch_id, msg_id = post
-            if ch_id == lb_channel.id:
-                try:
-                    msg = await lb_channel.fetch_message(msg_id)
-                except discord.NotFound:
-                    msg = None
-
-        # Récupérer stats
-        w_all, l_all, inc_all, tot_all = agg_totals_all(guild.id)
-        w_7d, l_7d, inc_7d, tot_7d = agg_totals_7d(guild.id)
-        split = hourly_split_7d(guild.id)
-        top = top_defenders(guild.id, 20)
-
-        color = discord.Color.green() if w_all > l_all else discord.Color.red() if l_all > w_all else discord.Color.orange()
-        medals = ["🥇","🥈","🥉"]
-        lines = [f"{medals[i-1] if i<3 else f'{i+1:02d}.'} {guild.get_member(uid).display_name if guild.get_member(uid) else f'<@{uid}>'} — **{cnt}** déf."
-                 for i,(uid,cnt) in enumerate(top)]
-        top_block = "\n".join(lines) if lines else "_Aucun participant détecté._"
-
-        global_block = (
-            f"**Victoires** {EMOJI_VICTORY} : **{w_all}**\n"
-            f"**Défaites** {EMOJI_DEFEAT} : **{l_all}**\n"
-            f"**Incomplètes** {EMOJI_INCOMP} : **{inc_all}**\n"
-            f"**Total** : **{tot_all}**"
-        )
-        block_7d = (
-            f"**Victoires** {EMOJI_VICTORY} : **{w_7d}**\n"
-            f"**Défaites** {EMOJI_DEFEAT} : **{l_7d}**\n"
-            f"**Incomplètes** {EMOJI_INCOMP} : **{inc_7d}**\n"
-            f"**Total** : **{tot_7d}**"
-        )
-        total_split = sum(split) or 1
-        split_block = "\n".join([f"{BUCKETS[i][0]} → **{int(round(count*100/total_split))}%** ({count})" for i,count in enumerate(split)])
-
-        embed = discord.Embed(title="🛡️ Leaderboard Défense", color=color)
-        embed.add_field(name="📊 Top défenseurs", value=top_block[:1024], inline=False)
-        embed.add_field(name="⚔️ Statistiques globales", value=global_block, inline=True)
-        embed.add_field(name="⏳ 7 derniers jours", value=block_7d, inline=True)
-        embed.add_field(name="🕒 Répartition horaire (7j)", value=split_block, inline=False)
-        embed.set_footer(text="MàJ automatique — réactions : 🏆 ❌ 😡 👍")
-
-        if msg is None:
-            msg = await lb_channel.send(embed=embed)
-            set_leaderboard_post(guild.id, lb_channel.id, msg.id, "def")
-        else:
-            await msg.edit(embed=embed)
-
-    # ---------- Mise à jour leaderboard Pingeur ----------
-    async def _update_leaderboard_ping(self, guild: discord.Guild):
-        if LEADERBOARD_PING_ID == 0: return
-        lb_channel = guild.get_channel(LEADERBOARD_PING_ID)
-        if not isinstance(lb_channel, discord.TextChannel): return
-
-        post = get_leaderboard_post(guild.id, "ping")
-        msg = None
-        if post:
-            ch_id, msg_id = post
-            if ch_id == lb_channel.id:
-                try:
-                    msg = await lb_channel.fetch_message(msg_id)
-                except discord.NotFound:
-                    msg = None
-
-        top = top_pingeurs(guild.id, 20)
-        medals = ["🥇","🥈","🥉"]
-        lines = [f"{medals[i-1] if i<3 else f'{i+1:02d}.'} {guild.get_member(uid).display_name if guild.get_member(uid) else f'<@{uid}>'} — **{cnt}** pings"
-                 for i,(uid,cnt) in enumerate(top)]
-        top_block = "\n".join(lines) if lines else "_Aucun pingeur détecté._"
-
-        embed = discord.Embed(title="⚡ Leaderboard Pingeur", color=discord.Color.blue())
-        embed.add_field(name="📊 Top Pingeurs", value=top_block[:1024], inline=False)
-        embed.set_footer(text="MàJ automatique — clics sur boutons ⚡")
-
-        if msg is None:
-            msg = await lb_channel.send(embed=embed)
-            set_leaderboard_post(guild.id, lb_channel.id, msg.id, "ping")
-        else:
-            await msg.edit(embed=embed)
+# ---------- Ajout du cog au bot ----------
+async def setup(bot: commands.Bot):
+    await bot.add_cog(PingCog(bot))
