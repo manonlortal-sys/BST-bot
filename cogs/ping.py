@@ -135,7 +135,7 @@ def set_leaderboard_post(con: sqlite3.Connection, guild_id: int, channel_id: int
         INSERT INTO leaderboard_posts(guild_id, channel_id, message_id, type)
         VALUES (?,?,?,?)
         ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id, message_id=excluded.message_id
-    """, (guild_id, channel_id, message_id, type_)
+    """, (guild_id, channel_id, message_id, type_))
 @with_db
 def agg_totals_all(con: sqlite3.Connection, guild_id: int) -> Tuple[int,int,int,int]:
     cur = con.cursor()
