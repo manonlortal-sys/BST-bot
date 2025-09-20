@@ -1,12 +1,3 @@
-# cogs/ping.py
-# Panneau de ping percepteur + leaderboard défense et pingeur
-# ENV requis:
-#   ALERT_CHANNEL_ID        -> salon où envoyer les alertes (int)
-#   LEADERBOARD_CHANNEL_ID  -> salon du leaderboard Défense (int)
-#   LEADERBOARD_PING_ID     -> salon du leaderboard Pingeur (int)
-#   ROLE_DEF_ID             -> rôle "Def" (int)
-#   ROLE_DEF2_ID            -> rôle "Def2" (int)
-
 from __future__ import annotations
 import os, time, sqlite3, asyncio
 from datetime import datetime, timezone
@@ -136,6 +127,7 @@ def set_leaderboard_post(con: sqlite3.Connection, guild_id: int, channel_id: int
         VALUES (?,?,?,?)
         ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id, message_id=excluded.message_id
     """, (guild_id, channel_id, message_id, type_))
+
 @with_db
 def agg_totals_all(con: sqlite3.Connection, guild_id: int) -> Tuple[int,int,int,int]:
     cur = con.cursor()
@@ -252,30 +244,27 @@ async def build_ping_embed(msg: discord.Message, creator: Optional[discord.Membe
     return embed
 
 # ---------- View boutons ----------
-# ---------- View boutons ----------
 class PingButtonsView(discord.ui.View):
     def __init__(self, bot: commands.Bot):
         super().__init__(timeout=None)
         self.bot = bot
 
-    @discord.ui.button(label="Guilde 1", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Guilde 1 (Def)", style=discord.ButtonStyle.primary)
     async def btn_def(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle_click(interaction, side="Def")
 
-    @discord.ui.button(label="Guilde 2", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Guilde 2 (Def2)", style=discord.ButtonStyle.danger)
     async def btn_def2(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle_click(interaction, side="Def2")
 
-    # ---------- Nouveau bouton Test ----------
     @discord.ui.button(label="TEST (Admin)", style=discord.ButtonStyle.secondary)
     async def btn_test(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Vérifie que l'utilisateur a le rôle admin
-        if not any(r.permissions.administrator for r in interaction.user.roles):
+        admin_roles = [r.id for r in interaction.user.roles if r.permissions.administrator]
+        if not admin_roles:
             await interaction.response.send_message(
                 "Bouton réservé aux gens qui codent, espèce de gueux", ephemeral=True
             )
             return
-
         await self._handle_click(interaction, side="Test")
 
     async def _handle_click(self, interaction: discord.Interaction, side: str):
@@ -292,34 +281,24 @@ class PingButtonsView(discord.ui.View):
         if not isinstance(alert_channel, discord.TextChannel):
             return
 
-        # Choix du rôle à ping selon le bouton
         if side == "Def":
             role_id = ROLE_DEF_ID
         elif side == "Def2":
             role_id = ROLE_DEF2_ID
         elif side == "Test":
-            # Récupération du rôle TEST par nom
-            role = discord.utils.get(guild.roles, name="TEST")
-            if not role:
-                await interaction.followup.send("Rôle TEST introuvable.", ephemeral=True)
-                return
-            role_id = role.id
+            role_id = int(os.getenv("ROLE_TEST_ID", "0"))
         else:
+            return
+        if role_id == 0:
             return
 
         role_mention = f"<@&{role_id}>"
-
-        # Envoi message alert
         msg = await alert_channel.send(f"{role_mention} — **Percepteur attaqué !** Merci de vous connecter.")
-
-        # Ajouter l’embed avec déclencheur
         emb = await build_ping_embed(msg, creator=interaction.user)
         await msg.edit(embed=emb)
-
-        # DB pour leaderboard pingeur
         upsert_message(msg, creator_id=interaction.user.id)
-
         await interaction.followup.send("✅ Alerte envoyée.", ephemeral=True)
+
 # ---------- Cog principal ----------
 class PingCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -344,6 +323,7 @@ class PingCog(commands.Cog):
         await interaction.channel.send(embed=embed, view=view)
         await interaction.followup.send("✅ Panneau publié.", ephemeral=True)
 
+    # ---------- Réactions pour update leaderboard ----------
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         await self._handle_reaction(payload, added=True)
@@ -353,41 +333,24 @@ class PingCog(commands.Cog):
         await self._handle_reaction(payload, added=False)
 
     async def _handle_reaction(self, payload: discord.RawReactionActionEvent, added: bool):
-        if payload.guild_id is None:
-            return
+        if payload.guild_id is None: return
         guild = self.bot.get_guild(payload.guild_id)
-        if guild is None:
-            return
+        if guild is None: return
         channel = guild.get_channel(payload.channel_id)
-        if not isinstance(channel, (discord.TextChannel, discord.Thread)):
-            return
+        if not isinstance(channel, (discord.TextChannel, discord.Thread)): return
 
         try:
             msg = await channel.fetch_message(payload.message_id)
         except discord.NotFound:
             return
 
-        upsert_message(msg)  # assure la DB
+        upsert_message(msg)
         emoji = str(payload.emoji)
 
         if emoji == EMOJI_VICTORY:
-            if added:
-                set_outcome(msg.id, "win")
-            else:
-                if not any(str(r.emoji) == EMOJI_VICTORY and r.count > 0 for r in msg.reactions):
-                    if any(str(r.emoji) == EMOJI_DEFEAT and r.count > 0 for r in msg.reactions):
-                        set_outcome(msg.id, "loss")
-                    else:
-                        set_outcome(msg.id, None)
+            set_outcome(msg.id, "win" if added else None)
         elif emoji == EMOJI_DEFEAT:
-            if added:
-                set_outcome(msg.id, "loss")
-            else:
-                if not any(str(r.emoji) == EMOJI_DEFEAT and r.count > 0 for r in msg.reactions):
-                    if any(str(r.emoji) == EMOJI_VICTORY and r.count > 0 for r in msg.reactions):
-                        set_outcome(msg.id, "win")
-                    else:
-                        set_outcome(msg.id, None)
+            set_outcome(msg.id, "loss" if added else None)
         elif emoji == EMOJI_INCOMP:
             set_incomplete(msg.id, added)
         elif emoji == EMOJI_JOIN:
@@ -405,34 +368,29 @@ class PingCog(commands.Cog):
         await self._schedule_update_def(guild)
         await self._schedule_update_ping(guild)
 
+    # ---------- Planification mise à jour leaderboard ----------
     async def _schedule_update_def(self, guild: discord.Guild):
-        if guild.id in self._pending_update_def and not self._pending_update_def[guild.id].done():
-            return
+        if guild.id in self._pending_update_def and not self._pending_update_def[guild.id].done(): return
         async def _delayed():
             await asyncio.sleep(1.0)
-            try:
-                await self._update_leaderboard_def(guild)
-            except Exception as e:
-                print("leaderboard update def error:", e)
+            try: await self._update_leaderboard_def(guild)
+            except Exception as e: print("leaderboard update def error:", e)
         self._pending_update_def[guild.id] = asyncio.create_task(_delayed())
 
     async def _schedule_update_ping(self, guild: discord.Guild):
-        if guild.id in self._pending_update_ping and not self._pending_update_ping[guild.id].done():
-            return
+        if guild.id in self._pending_update_ping and not self._pending_update_ping[guild.id].done(): return
         async def _delayed():
             await asyncio.sleep(1.0)
-            try:
-                await self._update_leaderboard_ping(guild)
-            except Exception as e:
-                print("leaderboard update ping error:", e)
+            try: await self._update_leaderboard_ping(guild)
+            except Exception as e: print("leaderboard update ping error:", e)
         self._pending_update_ping[guild.id] = asyncio.create_task(_delayed())
 
+# ---------- Mise à jour leaderboard Défense ----------
     async def _update_leaderboard_def(self, guild: discord.Guild):
-        if LEADERBOARD_CHANNEL_ID == 0:
-            return
+        if LEADERBOARD_CHANNEL_ID == 0: return
         lb_channel = guild.get_channel(LEADERBOARD_CHANNEL_ID)
-        if not isinstance(lb_channel, discord.TextChannel):
-            return
+        if not isinstance(lb_channel, discord.TextChannel): return
+
         post = get_leaderboard_post(guild.id, "def")
         msg = None
         if post:
@@ -443,15 +401,16 @@ class PingCog(commands.Cog):
                 except discord.NotFound:
                     msg = None
 
+        # Récupérer stats
         w_all, l_all, inc_all, tot_all = agg_totals_all(guild.id)
-        w_7d,  l_7d,  inc_7d,  tot_7d  = agg_totals_7d(guild.id)
+        w_7d, l_7d, inc_7d, tot_7d = agg_totals_7d(guild.id)
         split = hourly_split_7d(guild.id)
         top = top_defenders(guild.id, 20)
 
         color = discord.Color.green() if w_all > l_all else discord.Color.red() if l_all > w_all else discord.Color.orange()
         medals = ["🥇","🥈","🥉"]
-        lines = [f"{medals[i-1] if i<=3 else f'{i:02d}.'} {guild.get_member(uid).display_name if guild.get_member(uid) else f'<@{uid}>'} — **{cnt}** déf."
-                 for i,(uid,cnt) in enumerate(top,start=1)]
+        lines = [f"{medals[i-1] if i<3 else f'{i+1:02d}.'} {guild.get_member(uid).display_name if guild.get_member(uid) else f'<@{uid}>'} — **{cnt}** déf."
+                 for i,(uid,cnt) in enumerate(top)]
         top_block = "\n".join(lines) if lines else "_Aucun participant détecté._"
 
         global_block = (
@@ -470,7 +429,7 @@ class PingCog(commands.Cog):
         split_block = "\n".join([f"{BUCKETS[i][0]} → **{int(round(count*100/total_split))}%** ({count})" for i,count in enumerate(split)])
 
         embed = discord.Embed(title="🛡️ Leaderboard Défense", color=color)
-        embed.add_field(name="📊 Top défenseurs", value=top_block[:1024] or "\u200b", inline=False)
+        embed.add_field(name="📊 Top défenseurs", value=top_block[:1024], inline=False)
         embed.add_field(name="⚔️ Statistiques globales", value=global_block, inline=True)
         embed.add_field(name="⏳ 7 derniers jours", value=block_7d, inline=True)
         embed.add_field(name="🕒 Répartition horaire (7j)", value=split_block, inline=False)
@@ -482,12 +441,12 @@ class PingCog(commands.Cog):
         else:
             await msg.edit(embed=embed)
 
+    # ---------- Mise à jour leaderboard Pingeur ----------
     async def _update_leaderboard_ping(self, guild: discord.Guild):
-        if LEADERBOARD_PING_ID == 0:
-            return
+        if LEADERBOARD_PING_ID == 0: return
         lb_channel = guild.get_channel(LEADERBOARD_PING_ID)
-        if not isinstance(lb_channel, discord.TextChannel):
-            return
+        if not isinstance(lb_channel, discord.TextChannel): return
+
         post = get_leaderboard_post(guild.id, "ping")
         msg = None
         if post:
@@ -500,8 +459,8 @@ class PingCog(commands.Cog):
 
         top = top_pingeurs(guild.id, 20)
         medals = ["🥇","🥈","🥉"]
-        lines = [f"{medals[i-1] if i<=3 else f'{i:02d}.'} {guild.get_member(uid).display_name if guild.get_member(uid) else f'<@{uid}>'} — **{cnt}** pings"
-                 for i,(uid,cnt) in enumerate(top,start=1)]
+        lines = [f"{medals[i-1] if i<3 else f'{i+1:02d}.'} {guild.get_member(uid).display_name if guild.get_member(uid) else f'<@{uid}>'} — **{cnt}** pings"
+                 for i,(uid,cnt) in enumerate(top)]
         top_block = "\n".join(lines) if lines else "_Aucun pingeur détecté._"
 
         embed = discord.Embed(title="⚡ Leaderboard Pingeur", color=discord.Color.blue())
@@ -513,6 +472,3 @@ class PingCog(commands.Cog):
             set_leaderboard_post(guild.id, lb_channel.id, msg.id, "ping")
         else:
             await msg.edit(embed=embed)
-
-async def setup(bot: commands.Bot):
-    await bot.add_cog(PingCog(bot))
