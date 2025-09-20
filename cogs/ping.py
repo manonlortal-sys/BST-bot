@@ -314,6 +314,9 @@ class PingCog(commands.Cog):
         create_db()
         self._pending_update: Dict[Tuple[int,str], asyncio.Task] = {}
 
+        # ⚡ Enregistre le slash command au démarrage
+        self.bot.tree.add_command(self.pingpanel)
+
     @app_commands.command(name="pingpanel", description="Publier le panneau de ping des percepteurs (boutons Def/Def2).")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def pingpanel(self, interaction: discord.Interaction):
