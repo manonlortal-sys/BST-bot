@@ -41,13 +41,15 @@ class OCRLeaderboard(commands.Cog):
 
     # ----------------- Écoute des messages -----------------
     @commands.Cog.listener()
-    async def on_message(self, message):
-        if message.author.bot or not self.active:
-            return
-        if message.attachments:
-            for attach in message.attachments:
-                if attach.content_type and attach.content_type.startswith("image/"):
-                    await self.process_image(message, attach)
+async def on_message(self, message):
+    print(f"📩 Message reçu de {message.author}: {message.content}, {len(message.attachments)} attachments")
+
+    if message.author.bot or not self.active:
+        return
+    if message.attachments:
+        for attach in message.attachments:
+            if attach.filename.lower().endswith(("png","jpg","jpeg","webp")):
+                await self.process_image(message, attach)
 
     # ----------------- Appel Google Vision -----------------
     async def process_image(self, message, attachment):
