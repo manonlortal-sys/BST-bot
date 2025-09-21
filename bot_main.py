@@ -59,6 +59,12 @@ async def setup_hook():
         print("✅ Slash commands sync globale")
     except Exception as e:
         print("❌ Slash sync error :", e)
+    # Charger le cog OCR + leaderboard
+    try:
+        await bot.load_extension("cogs.ocr_leaderboard")
+        print("✅ Cog OCR + Leaderboard chargé")
+    except Exception as e:
+        print("❌ Erreur chargement OCR + Leaderboard :", e)
 
 @bot.event
 async def on_ready():
