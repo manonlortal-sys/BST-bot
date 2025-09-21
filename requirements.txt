@@ -6,4 +6,5 @@ audioop-lts
 openai>=1.107.0
 aiosqlite==0.19.0
 Pillow
-pytesseract  # ou requests si tu utilises une API OCR
+requests        # nécessaire pour appeler Google Vision API
+google-cloud-vision  # optionnel si tu veux utiliser la librairie officielle
