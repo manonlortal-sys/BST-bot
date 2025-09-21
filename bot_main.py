@@ -27,10 +27,10 @@ LEADERBOARD_CHANNEL_ID = int(os.getenv("LEADERBOARD_CHANNEL_ID", "0"))
 # ---------- Intents ----------
 intents = discord.Intents.default()
 intents.guilds = True
-intents.members = True       # tu l'avais déjà
-intents.messages = True      # nécessaire pour recevoir message events
-intents.reactions = True     # nécessaire pour recevoir reaction events (raw_reaction_*)
-# (message_content n'est pas requis pour raw reaction events)
+intents.members = True
+intents.messages = True
+intents.reactions = True
+# note: message_content n'est pas nécessaire pour lire les attachments
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -53,18 +53,25 @@ async def setup_hook():
     except Exception as e:
         print("❌ Erreur chargement Roulette :", e)
 
-    # Synchronisation globale pour s'assurer que pingpanel apparaisse
-    try:
-        await bot.tree.sync()
-        print("✅ Slash commands sync globale")
-    except Exception as e:
-        print("❌ Slash sync error :", e)
-    # Charger le cog OCR + leaderboard
+    # Charger le cog OCR + leaderboard AVANT la sync des slashs
     try:
         await bot.load_extension("cogs.ocr_leaderboard")
         print("✅ Cog OCR + Leaderboard chargé")
     except Exception as e:
         print("❌ Erreur chargement OCR + Leaderboard :", e)
+
+    # Synchronisation des slash commands
+    try:
+        # Pour tests rapides : définis TEST_GUILD_ID en variable d'env pour synchroniser localement
+        TEST_GUILD_ID = int(os.getenv("TEST_GUILD_ID", "0"))
+        if TEST_GUILD_ID:
+            await bot.tree.sync(guild=discord.Object(id=TEST_GUILD_ID))
+            print("✅ Slash commands synced to guild", TEST_GUILD_ID)
+        else:
+            await bot.tree.sync()
+            print("✅ Global slash commands sync (may take up to 1 hour to appear)")
+    except Exception as e:
+        print("❌ Slash sync error :", e)
 
 @bot.event
 async def on_ready():
@@ -74,10 +81,11 @@ async def on_ready():
         channel = bot.get_channel(LEADERBOARD_CHANNEL_ID)
         if channel:
             try:
-                # note: .flatten() peut être obsolète selon ta version de discord.py,
-                # mais je garde ton code original — si erreur, remplacer par:
-                # messages = [m async for m in channel.history(limit=10)]
-                messages = await channel.history(limit=10).flatten()
+                # récupération des derniers messages sans utiliser .flatten()
+                messages = []
+                async for m in channel.history(limit=10):
+                    messages.append(m)
+
                 if not any("Leaderboard" in (m.content or "") for m in messages):
                     await channel.send("📊 **Leaderboard initialisé**")
             except Exception as e:
