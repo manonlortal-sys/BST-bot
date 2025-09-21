@@ -24,9 +24,13 @@ if not DISCORD_TOKEN:
 
 LEADERBOARD_CHANNEL_ID = int(os.getenv("LEADERBOARD_CHANNEL_ID", "0"))
 
+# ---------- Intents ----------
 intents = discord.Intents.default()
 intents.guilds = True
-intents.members = True
+intents.members = True       # tu l'avais déjà
+intents.messages = True      # nécessaire pour recevoir message events
+intents.reactions = True     # nécessaire pour recevoir reaction events (raw_reaction_*)
+# (message_content n'est pas requis pour raw reaction events)
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -64,6 +68,9 @@ async def on_ready():
         channel = bot.get_channel(LEADERBOARD_CHANNEL_ID)
         if channel:
             try:
+                # note: .flatten() peut être obsolète selon ta version de discord.py,
+                # mais je garde ton code original — si erreur, remplacer par:
+                # messages = [m async for m in channel.history(limit=10)]
                 messages = await channel.history(limit=10).flatten()
                 if not any("Leaderboard" in (m.content or "") for m in messages):
                     await channel.send("📊 **Leaderboard initialisé**")
