@@ -392,9 +392,6 @@ class PingCog(commands.Cog):
         await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
 
     # ---------- Commande /stats ----------
-    from typing import Optional
-    from discord import app_commands
-    
     @app_commands.command(name="stats", description="Afficher les stats de défense d'un joueur")
     @app_commands.describe(member="Le joueur dont vous voulez voir les stats (optionnel)")
     async def stats(self, interaction: discord.Interaction, member: Optional[discord.Member] = None):
