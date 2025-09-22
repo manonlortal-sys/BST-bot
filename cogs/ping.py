@@ -410,4 +410,11 @@ class PingCog(commands.Cog):
 
 # ---------- Setup ----------
 async def setup(bot: commands.Bot):
-    await bot.add_cog(PingCog(bot))
+    cog = PingCog(bot)
+    await bot.add_cog(cog)
+
+    # Synchronisation des commandes slash sur le serveur de test uniquement
+    TEST_GUILD_ID = 1280234399610179634
+    test_guild = discord.Object(id=TEST_GUILD_ID)
+    bot.tree.copy_global_to(guild=test_guild)
+    await bot.tree.sync(guild=test_guild)
