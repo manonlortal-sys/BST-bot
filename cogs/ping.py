@@ -2,9 +2,11 @@ from __future__ import annotations
 import os
 import time
 import sqlite3
-from datetime import datetime, timezone
-from typing import Optional, Tuple, List
+import asyncio
+from datetime import datetime, timezone, timedelta
+from typing import Optional, Tuple, List, Dict
 from zoneinfo import ZoneInfo
+
 
 import discord
 from discord import app_commands
@@ -184,11 +186,13 @@ def top_pingeurs(con: sqlite3.Connection, guild_id: int, limit: int = 20) -> Lis
     return [(row["creator_id"], row["cnt"]) for row in cur.fetchall()]
 
 @with_db
-def hourly_split_all(con: sqlite3.Connection, guild_id: int) -> list[int]:
-    """Retourne le nombre de défenses par tranche horaire sur toutes les défenses."""
+def hourly_split_7d(con: sqlite3.Connection, guild_id: int) -> list[int]:
+    """Retourne le nombre de défenses par tranche horaire (Matin, Journée, Soir, Nuit) sur les 7 derniers jours."""
+    since = utcnow_i() - 7 * 24 * 3600  # 7 jours en secondes
     cur = con.cursor()
-    cur.execute("SELECT created_ts FROM messages WHERE guild_id=?", (guild_id,))
+    cur.execute("SELECT created_ts FROM messages WHERE guild_id=? AND created_ts>=?", (guild_id, since))
     rows = cur.fetchall()
+
     counts = [0, 0, 0, 0]  # Matin, Journée, Soir, Nuit
 
     for r in rows:
@@ -204,6 +208,7 @@ def hourly_split_all(con: sqlite3.Connection, guild_id: int) -> list[int]:
             counts[2] += 1
         else:  # 0h-6h
             counts[3] += 1
+
     return counts
 
 # ---------- Embed constructeur ----------
@@ -211,11 +216,13 @@ async def build_ping_embed(msg: discord.Message) -> discord.Embed:
     creator_id = get_message_creator(msg.id)
     creator_member = msg.guild.get_member(creator_id) if creator_id else None
 
+    # Récupère les réactions
     reactions = {str(r.emoji): r for r in msg.reactions}
     win  = (EMOJI_VICTORY in reactions and reactions[EMOJI_VICTORY].count > 0)
     loss = (EMOJI_DEFEAT in reactions and reactions[EMOJI_DEFEAT].count > 0)
     incomplete = (EMOJI_INCOMP in reactions and reactions[EMOJI_INCOMP].count > 0)
 
+    # Détermine l'état du combat
     if win and not loss:
         color = discord.Color.green()
         etat = f"{EMOJI_VICTORY} **Défense gagnée**"
@@ -238,6 +245,7 @@ async def build_ping_embed(msg: discord.Message) -> discord.Embed:
         async for u in reactions[EMOJI_JOIN].users():
             if not u.bot:
                 defenders_ids.append(u.id)
+                add_participant(msg.id, u.id)
 
     names: List[str] = []
     for uid in defenders_ids[:20]:
@@ -245,6 +253,7 @@ async def build_ping_embed(msg: discord.Message) -> discord.Embed:
         names.append(m.display_name if m else f"<@{uid}>")
     defenders_block = "• " + "\n• ".join(names) if names else "_Aucun défenseur pour le moment._"
 
+    # Construction de l'embed
     embed = discord.Embed(
         title="🛡️ Alerte Percepteur",
         description="⚠️ **Connectez-vous pour prendre la défense !**",
@@ -324,11 +333,13 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
     if channel is None:
         return
 
+    # ---------- Leaderboard Défense ----------
     def_post = get_leaderboard_post(guild.id, "defense")
     if def_post:
         try:
             msg_def = await channel.fetch_message(def_post[1])
         except discord.NotFound:
+            # Message supprimé : recréer
             msg_def = await channel.send("📊 **Leaderboard Défense**")
             set_leaderboard_post(guild.id, channel.id, msg_def.id, "defense")
     else:
@@ -337,7 +348,7 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
 
     total_w, total_l, total_inc, total_att = agg_totals_all(guild.id)
     top_def = top_defenders(guild.id)
-    hourly = hourly_split_all(guild.id)
+    hourly = hourly_split_7d(guild.id)
 
     top_block = "\n".join([f"• <@{uid}> : {cnt} défenses" for uid, cnt in top_def]) or "_Aucun défenseur encore_"
     ratio = f"{(total_w/total_att*100):.1f}%" if total_att else "0%"
@@ -350,16 +361,17 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
         inline=False
     )
     embed_def.add_field(
-        name="Tranches horaires (total)",
+        name="Tranches horaires (7j)",
         value=f"🌅 Matin 6h-10h : {hourly[0]}\n🌞 Journée 10h-18h : {hourly[1]}\n🌙 Soir 18h-00h : {hourly[2]}\n🌌 Nuit 00h-06h : {hourly[3]}",
         inline=False
     )
     await msg_def.edit(embed=embed_def)
 
-    top_post = get_leaderboard_post(guild.id, "pingeur")
-    if top_post:
+    # ---------- Leaderboard Pingeurs ----------
+    ping_post = get_leaderboard_post(guild.id, "pingeur")
+    if ping_post:
         try:
-            msg_ping = await channel.fetch_message(top_post[1])
+            msg_ping = await channel.fetch_message(ping_post[1])
         except discord.NotFound:
             msg_ping = await channel.send("📊 **Leaderboard Pingeurs**")
             set_leaderboard_post(guild.id, channel.id, msg_ping.id, "pingeur")
@@ -372,6 +384,7 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
     embed_ping = discord.Embed(title="📊 Leaderboard Pingeurs", color=discord.Color.gold())
     embed_ping.add_field(name="Top Pingeurs", value=ping_block, inline=False)
     await msg_ping.edit(embed=embed_ping)
+
 
 # ---------- Cog principal ----------
 class PingCog(commands.Cog):
@@ -432,7 +445,11 @@ class PingCog(commands.Cog):
 async def setup(bot: commands.Bot):
     cog = PingCog(bot)
     await bot.add_cog(cog)
+
+    # ID du serveur de test
     TEST_GUILD_ID = 1280234399610179634
     test_guild = discord.Object(id=TEST_GUILD_ID)
+
+    # Ajouter la commande au tree du serveur
     bot.tree.add_command(cog.pingpanel, guild=test_guild)
     await bot.tree.sync(guild=test_guild)
