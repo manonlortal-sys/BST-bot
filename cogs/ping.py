@@ -7,7 +7,6 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple, List, Dict
 from zoneinfo import ZoneInfo
 
-
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -50,7 +49,8 @@ def create_db():
             outcome    TEXT,
             incomplete INTEGER,
             last_ts    INTEGER NOT NULL,
-            creator_id INTEGER
+            creator_id INTEGER,
+            guild_type TEXT DEFAULT 'Def'
         )
     """)
     cur.execute("""
@@ -86,14 +86,14 @@ def with_db(func):
 
 # ---------- DB functions ----------
 @with_db
-def upsert_message(con: sqlite3.Connection, message: discord.Message, creator_id: Optional[int] = None):
+def upsert_message(con: sqlite3.Connection, message: discord.Message, creator_id: Optional[int] = None, guild_type: str = "Def"):
     cur = con.cursor()
     cur.execute("""
-        INSERT INTO messages(message_id, guild_id, channel_id, created_ts, outcome, incomplete, last_ts, creator_id)
-        VALUES (?,?,?,?,NULL,0,?,?)
+        INSERT INTO messages(message_id, guild_id, channel_id, created_ts, outcome, incomplete, last_ts, creator_id, guild_type)
+        VALUES (?,?,?,?,NULL,0,?,?,?)
         ON CONFLICT(message_id) DO NOTHING
     """, (message.id, message.guild.id, message.channel.id,
-          int(message.created_at.replace(tzinfo=timezone.utc).timestamp()), utcnow_i(), creator_id))
+          int(message.created_at.replace(tzinfo=timezone.utc).timestamp()), utcnow_i(), creator_id, guild_type))
 
 @with_db
 def get_message_creator(con: sqlite3.Connection, message_id: int) -> Optional[int]:
@@ -159,6 +159,20 @@ def agg_totals_all(con: sqlite3.Connection, guild_id: int) -> Tuple[int,int,int,
     return (w or 0, l or 0, inc or 0, tot or 0)
 
 @with_db
+def agg_totals_by_guild_type(con: sqlite3.Connection, guild_id: int, guild_type: str) -> Tuple[int,int,int,int]:
+    cur = con.cursor()
+    cur.execute("""
+        SELECT SUM(CASE WHEN outcome='win'  THEN 1 ELSE 0 END),
+               SUM(CASE WHEN outcome='loss' THEN 1 ELSE 0 END),
+               SUM(CASE WHEN incomplete=1  THEN 1 ELSE 0 END),
+               COUNT(*)
+        FROM messages
+        WHERE guild_id=? AND guild_type=?
+    """, (guild_id, guild_type))
+    w,l,inc,tot = cur.fetchone()
+    return (w or 0, l or 0, inc or 0, tot or 0)
+
+@with_db
 def top_defenders(con: sqlite3.Connection, guild_id: int, limit: int = 20) -> List[Tuple[int,int]]:
     cur = con.cursor()
     cur.execute("""
@@ -186,11 +200,9 @@ def top_pingeurs(con: sqlite3.Connection, guild_id: int, limit: int = 20) -> Lis
     return [(row["creator_id"], row["cnt"]) for row in cur.fetchall()]
 
 @with_db
-def hourly_split_7d(con: sqlite3.Connection, guild_id: int) -> list[int]:
-    """Retourne le nombre de défenses par tranche horaire (Matin, Journée, Soir, Nuit) sur les 7 derniers jours."""
-    since = utcnow_i() - 7 * 24 * 3600  # 7 jours en secondes
+def hourly_split_total(con: sqlite3.Connection, guild_id: int) -> list[int]:
     cur = con.cursor()
-    cur.execute("SELECT created_ts FROM messages WHERE guild_id=? AND created_ts>=?", (guild_id, since))
+    cur.execute("SELECT created_ts FROM messages WHERE guild_id=?", (guild_id,))
     rows = cur.fetchall()
 
     counts = [0, 0, 0, 0]  # Matin, Journée, Soir, Nuit
@@ -206,7 +218,7 @@ def hourly_split_7d(con: sqlite3.Connection, guild_id: int) -> list[int]:
             counts[1] += 1
         elif 18 <= h_local < 24:
             counts[2] += 1
-        else:  # 0h-6h
+        else:
             counts[3] += 1
 
     return counts
@@ -315,7 +327,7 @@ class PingButtonsView(discord.ui.View):
         content = f"{role_mention} — **Percepteur attaqué !** Merci de vous connecter." if role_mention else "**Percepteur attaqué !** Merci de vous connecter."
 
         msg = await alert_channel.send(content)
-        upsert_message(msg, creator_id=interaction.user.id)
+        upsert_message(msg, creator_id=interaction.user.id, guild_type=side)
         emb = await build_ping_embed(msg)
         await msg.edit(embed=emb)
 
@@ -348,7 +360,10 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
 
     total_w, total_l, total_inc, total_att = agg_totals_all(guild.id)
     top_def = top_defenders(guild.id)
-    hourly = hourly_split_7d(guild.id)
+    hourly = hourly_split_total(guild.id)
+
+    w_def, l_def, inc_def, tot_def = agg_totals_by_guild_type(guild.id, "Def")
+    w_def2, l_def2, inc_def2, tot_def2 = agg_totals_by_guild_type(guild.id, "Def2")
 
     top_block = "\n".join([f"• <@{uid}> : {cnt} défenses" for uid, cnt in top_def]) or "_Aucun défenseur encore_"
     ratio = f"{(total_w/total_att*100):.1f}%" if total_att else "0%"
@@ -361,7 +376,13 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
         inline=False
     )
     embed_def.add_field(
-        name="Tranches horaires (7j)",
+        name="Stats détaillées",
+        value=f"**Def :** Attaques {tot_def}, Victoires {w_def}, Défaites {l_def}, Incomplet {inc_def}\n"
+              f"**Def2 :** Attaques {tot_def2}, Victoires {w_def2}, Défaites {l_def2}, Incomplet {inc_def2}",
+        inline=False
+    )
+    embed_def.add_field(
+        name="Tranches horaires (total)",
         value=f"🌅 Matin 6h-10h : {hourly[0]}\n🌞 Journée 10h-18h : {hourly[1]}\n🌙 Soir 18h-00h : {hourly[2]}\n🌌 Nuit 00h-06h : {hourly[3]}",
         inline=False
     )
@@ -384,7 +405,6 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
     embed_ping = discord.Embed(title="📊 Leaderboard Pingeurs", color=discord.Color.gold())
     embed_ping.add_field(name="Top Pingeurs", value=ping_block, inline=False)
     await msg_ping.edit(embed=embed_ping)
-
 
 # ---------- Cog principal ----------
 class PingCog(commands.Cog):
@@ -453,3 +473,4 @@ async def setup(bot: commands.Bot):
     # Ajouter la commande au tree du serveur
     bot.tree.add_command(cog.pingpanel, guild=test_guild)
     await bot.tree.sync(guild=test_guild)
+
