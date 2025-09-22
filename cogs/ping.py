@@ -2,11 +2,9 @@ from __future__ import annotations
 import os
 import time
 import sqlite3
-import asyncio
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Tuple, List, Dict
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
-
+from typing import Optional, List, Tuple
 
 import discord
 from discord import app_commands
@@ -25,14 +23,14 @@ EMOJI_DEFEAT = "❌"
 EMOJI_INCOMP = "😡"
 EMOJI_JOIN = "👍"
 
+DB_PATH = "defense_leaderboard.db"
+
 BUCKETS = [
     ("🌅 Matin (6–10)", 6, 10),
     ("🌞 Journée (10–18)", 10, 18),
     ("🌙 Soir (18–00)", 18, 24),
     ("🌌 Nuit (00–6)", 0, 6),
 ]
-
-DB_PATH = "defense_leaderboard.db"
 
 def utcnow_i() -> int:
     return int(time.time())
@@ -100,9 +98,7 @@ def get_message_creator(con: sqlite3.Connection, message_id: int) -> Optional[in
     cur = con.cursor()
     cur.execute("SELECT creator_id FROM messages WHERE message_id=?", (message_id,))
     row = cur.fetchone()
-    if row:
-        return row["creator_id"]
-    return None
+    return row["creator_id"] if row else None
 
 @with_db
 def set_outcome(con: sqlite3.Connection, message_id: int, outcome: Optional[str]):
@@ -132,8 +128,7 @@ def get_leaderboard_post(con: sqlite3.Connection, guild_id: int, type_: str) -> 
     cur = con.cursor()
     cur.execute("SELECT channel_id, message_id FROM leaderboard_posts WHERE guild_id=? AND type=?", (guild_id, type_))
     row = cur.fetchone()
-    if not row: return None
-    return (row["channel_id"], row["message_id"])
+    return (row["channel_id"], row["message_id"]) if row else None
 
 @with_db
 def set_leaderboard_post(con: sqlite3.Connection, guild_id: int, channel_id: int, message_id: int, type_: str):
@@ -187,84 +182,116 @@ def top_pingeurs(con: sqlite3.Connection, guild_id: int, limit: int = 20) -> Lis
 
 @with_db
 def hourly_split_7d(con: sqlite3.Connection, guild_id: int) -> list[int]:
-    """Retourne le nombre de défenses par tranche horaire (Matin, Journée, Soir, Nuit) sur les 7 derniers jours."""
-    since = utcnow_i() - 7 * 24 * 3600  # 7 jours en secondes
+    since = utcnow_i() - 7*24*3600
     cur = con.cursor()
     cur.execute("SELECT created_ts FROM messages WHERE guild_id=? AND created_ts>=?", (guild_id, since))
-    rows = cur.fetchall()
-
-    counts = [0, 0, 0, 0]  # Matin, Journée, Soir, Nuit
-
-    for r in rows:
+    counts = [0,0,0,0]
+    for r in cur.fetchall():
         ts = r["created_ts"]
-        dt_paris = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(ZoneInfo("Europe/Paris"))
-        h_local = dt_paris.hour
-
-        if 6 <= h_local < 10:
-            counts[0] += 1
-        elif 10 <= h_local < 18:
-            counts[1] += 1
-        elif 18 <= h_local < 24:
-            counts[2] += 1
-        else:  # 0h-6h
-            counts[3] += 1
-
+        h_local = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(ZoneInfo("Europe/Paris")).hour
+        if 6 <= h_local <10: counts[0]+=1
+        elif 10<=h_local<18: counts[1]+=1
+        elif 18<=h_local<24: counts[2]+=1
+        else: counts[3]+=1
     return counts
+
+# ---------- DB pour /stats ----------
+@with_db
+def get_player_defenses(con, guild_id: int, user_id: int, limit: int = 3):
+    cur = con.cursor()
+    cur.execute("""
+        SELECT m.message_id, m.channel_id, m.created_ts, m.outcome,
+               GROUP_CONCAT(p2.user_id) as participants
+        FROM messages m
+        JOIN participants p1 ON p1.message_id = m.message_id AND p1.user_id = ?
+        LEFT JOIN participants p2 ON p2.message_id = m.message_id
+        WHERE m.guild_id = ?
+        GROUP BY m.message_id
+        ORDER BY m.created_ts DESC
+        LIMIT ?
+    """, (user_id, guild_id, limit))
+    return cur.fetchall()
+
+@with_db
+def get_player_totals(con, guild_id:int, user_id:int):
+    cur = con.cursor()
+    cur.execute("""
+        SELECT SUM(CASE WHEN m.outcome='win' THEN 1 ELSE 0 END) as wins,
+               SUM(CASE WHEN m.outcome='loss' THEN 1 ELSE 0 END) as losses,
+               COUNT(*) as total
+        FROM messages m
+        JOIN participants p ON p.message_id = m.message_id
+        WHERE m.guild_id=? AND p.user_id=?
+    """,(guild_id,user_id))
+    return cur.fetchone()
+
+@with_db
+def get_last_defeat(con, guild_id:int, user_id:int):
+    cur = con.cursor()
+    cur.execute("""
+        SELECT created_ts FROM messages m
+        JOIN participants p ON p.message_id = m.message_id
+        WHERE m.guild_id=? AND p.user_id=? AND m.outcome='loss'
+        ORDER BY created_ts DESC
+        LIMIT 1
+    """,(guild_id,user_id))
+    row = cur.fetchone()
+    return row["created_ts"] if row else None
+
+@with_db
+def get_favorite_partner(con, guild_id:int, user_id:int):
+    cur = con.cursor()
+    cur.execute("""
+        SELECT p2.user_id, COUNT(*) as cnt
+        FROM participants p1
+        JOIN participants p2 ON p1.message_id = p2.message_id
+        JOIN messages m ON m.message_id = p1.message_id
+        WHERE m.guild_id=? AND p1.user_id=? AND p2.user_id!=?
+        GROUP BY p2.user_id
+        ORDER BY cnt DESC
+        LIMIT 1
+    """,(guild_id,user_id,user_id))
+    row = cur.fetchone()
+    return row["user_id"] if row else None
 
 # ---------- Embed constructeur ----------
 async def build_ping_embed(msg: discord.Message) -> discord.Embed:
     creator_id = get_message_creator(msg.id)
     creator_member = msg.guild.get_member(creator_id) if creator_id else None
 
-    # Récupère les réactions
     reactions = {str(r.emoji): r for r in msg.reactions}
     win  = (EMOJI_VICTORY in reactions and reactions[EMOJI_VICTORY].count > 0)
     loss = (EMOJI_DEFEAT in reactions and reactions[EMOJI_DEFEAT].count > 0)
     incomplete = (EMOJI_INCOMP in reactions and reactions[EMOJI_INCOMP].count > 0)
 
-    # Détermine l'état du combat
     if win and not loss:
         color = discord.Color.green()
         etat = f"{EMOJI_VICTORY} **Défense gagnée**"
-        if incomplete:
-            etat += f"\n{EMOJI_INCOMP} Défense incomplète"
+        if incomplete: etat += f"\n{EMOJI_INCOMP} Défense incomplète"
     elif loss and not win:
         color = discord.Color.red()
         etat = f"{EMOJI_DEFEAT} **Défense perdue**"
-        if incomplete:
-            etat += f"\n{EMOJI_INCOMP} Défense incomplète"
+        if incomplete: etat += f"\n{EMOJI_INCOMP} Défense incomplète"
     else:
         color = discord.Color.orange()
         etat = "⏳ **En cours / à confirmer**"
-        if incomplete:
-            etat += f"\n{EMOJI_INCOMP} Défense incomplète"
+        if incomplete: etat += f"\n{EMOJI_INCOMP} Défense incomplète"
 
-    # Défenseurs
     defenders_ids: List[int] = []
     if EMOJI_JOIN in reactions:
         async for u in reactions[EMOJI_JOIN].users():
             if not u.bot:
                 defenders_ids.append(u.id)
-                add_participant(msg.id, u.id)
-
-    names: List[str] = []
-    for uid in defenders_ids[:20]:
-        m = msg.guild.get_member(uid)
-        names.append(m.display_name if m else f"<@{uid}>")
+                add_participant(msg.id,u.id)
+    names = [msg.guild.get_member(uid).display_name if msg.guild.get_member(uid) else f"<@{uid}>" for uid in defenders_ids[:20]]
     defenders_block = "• " + "\n• ".join(names) if names else "_Aucun défenseur pour le moment._"
 
-    # Construction de l'embed
-    embed = discord.Embed(
-        title="🛡️ Alerte Percepteur",
-        description="⚠️ **Connectez-vous pour prendre la défense !**",
-        color=color,
-    )
+    embed = discord.Embed(title="🛡️ Alerte Percepteur",
+                          description="⚠️ **Connectez-vous pour prendre la défense !**",
+                          color=color)
     embed.add_field(name="État du combat", value=etat, inline=False)
     embed.add_field(name="Défenseurs (👍)", value=defenders_block, inline=False)
-
-    if creator_member:
-        embed.add_field(name="⚡ Déclenché par", value=creator_member.display_name, inline=False)
-
+    if creator_member: embed.add_field(name="⚡ Déclenché par", value=creator_member.display_name, inline=False)
     embed.set_footer(text="Ajoutez vos réactions : 🏆 gagné • ❌ perdu • 😡 incomplète • 👍 j'ai participé")
     return embed
 
@@ -276,75 +303,53 @@ class PingButtonsView(discord.ui.View):
 
     @discord.ui.button(label="Guilde 1", style=discord.ButtonStyle.primary)
     async def btn_def(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._handle_click(interaction, side="Def")
+        await self._handle_click(interaction, "Def")
 
     @discord.ui.button(label="Guilde 2", style=discord.ButtonStyle.danger)
     async def btn_def2(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._handle_click(interaction, side="Def2")
+        await self._handle_click(interaction, "Def2")
 
     @discord.ui.button(label="TEST (Admin)", style=discord.ButtonStyle.secondary)
     async def btn_test(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not any(r.permissions.administrator for r in interaction.user.roles):
             await interaction.response.send_message("Bouton réservé aux admins.", ephemeral=True)
             return
-        await self._handle_click(interaction, side="Test")
+        await self._handle_click(interaction, "Test")
 
     async def _handle_click(self, interaction: discord.Interaction, side: str):
-        try:
-            await interaction.response.defer(ephemeral=True, thinking=False)
-        except Exception:
-            pass
-
+        await interaction.response.defer(ephemeral=True, thinking=False)
         guild = interaction.guild
-        if guild is None or ALERT_CHANNEL_ID == 0:
-            return
+        if guild is None or ALERT_CHANNEL_ID == 0: return
 
         alert_channel = guild.get_channel(ALERT_CHANNEL_ID)
-        if not isinstance(alert_channel, discord.TextChannel):
-            return
+        if not isinstance(alert_channel, discord.TextChannel): return
 
         role_id = 0
-        if side == "Def":
-            role_id = ROLE_DEF_ID
-        elif side == "Def2":
-            role_id = ROLE_DEF2_ID
-        elif side == "Test":
-            role_id = ROLE_TEST_ID
+        if side=="Def": role_id=ROLE_DEF_ID
+        elif side=="Def2": role_id=ROLE_DEF2_ID
+        elif side=="Test": role_id=ROLE_TEST_ID
 
-        role_mention = f"<@&{role_id}>" if role_id != 0 else ""
+        role_mention = f"<@&{role_id}>" if role_id!=0 else ""
         content = f"{role_mention} — **Percepteur attaqué !** Merci de vous connecter." if role_mention else "**Percepteur attaqué !** Merci de vous connecter."
 
         msg = await alert_channel.send(content)
         upsert_message(msg, creator_id=interaction.user.id)
         emb = await build_ping_embed(msg)
         await msg.edit(embed=emb)
-
-        # Met à jour les leaderboards automatiquement
         await update_leaderboards(self.bot, guild)
-
-        try:
-            await interaction.followup.send("✅ Alerte envoyée.", ephemeral=True)
-        except Exception:
-            pass
+        await interaction.followup.send("✅ Alerte envoyée.", ephemeral=True)
 
 # ---------- Leaderboards ----------
 async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
     channel = bot.get_channel(LEADERBOARD_CHANNEL_ID)
-    if channel is None:
-        return
+    if channel is None: return
 
-    # ---------- Leaderboard Défense ----------
+    # Leaderboard Défense
     def_post = get_leaderboard_post(guild.id, "defense")
     if def_post:
-        try:
-            msg_def = await channel.fetch_message(def_post[1])
-        except discord.NotFound:
-            # Message supprimé : recréer
-            msg_def = await channel.send("📊 **Leaderboard Défense**")
-            set_leaderboard_post(guild.id, channel.id, msg_def.id, "defense")
-    else:
-        msg_def = await channel.send("📊 **Leaderboard Défense**")
-        set_leaderboard_post(guild.id, channel.id, msg_def.id, "defense")
+        try: msg_def = await channel.fetch_message(def_post[1])
+        except discord.NotFound: msg_def = await channel.send("📊 **Leaderboard Défense**"); set_leaderboard_post(guild.id, channel.id, msg_def.id, "defense")
+    else: msg_def = await channel.send("📊 **Leaderboard Défense**"); set_leaderboard_post(guild.id, channel.id, msg_def.id, "defense")
 
     total_w, total_l, total_inc, total_att = agg_totals_all(guild.id)
     top_def = top_defenders(guild.id)
@@ -355,36 +360,22 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
 
     embed_def = discord.Embed(title="📊 Leaderboard Défense", color=discord.Color.blue())
     embed_def.add_field(name="Top défenseurs", value=top_block, inline=False)
-    embed_def.add_field(
-        name="Stats globales",
-        value=f"Attaques : {total_att}\nVictoire : {total_w}\nDéfaites : {total_l}\nIncomplet : {total_inc}\nRatio victoire : {ratio}",
-        inline=False
-    )
-    embed_def.add_field(
-        name="Tranches horaires (7j)",
-        value=f"🌅 Matin 6h-10h : {hourly[0]}\n🌞 Journée 10h-18h : {hourly[1]}\n🌙 Soir 18h-00h : {hourly[2]}\n🌌 Nuit 00h-06h : {hourly[3]}",
-        inline=False
-    )
+    embed_def.add_field(name="Stats globales", value=f"Attaques : {total_att}\nVictoire : {total_w}\nDéfaites : {total_l}\nIncomplet : {total_inc}\nRatio victoire : {ratio}", inline=False)
+    embed_def.add_field(name="Tranches horaires (7j)", value=f"🌅 Matin : {hourly[0]}\n🌞 Journée : {hourly[1]}\n🌙 Soir : {hourly[2]}\n🌌 Nuit : {hourly[3]}", inline=False)
     await msg_def.edit(embed=embed_def)
 
-    # ---------- Leaderboard Pingeurs ----------
+    # Leaderboard Pingeurs
     ping_post = get_leaderboard_post(guild.id, "pingeur")
     if ping_post:
-        try:
-            msg_ping = await channel.fetch_message(ping_post[1])
-        except discord.NotFound:
-            msg_ping = await channel.send("📊 **Leaderboard Pingeurs**")
-            set_leaderboard_post(guild.id, channel.id, msg_ping.id, "pingeur")
-    else:
-        msg_ping = await channel.send("📊 **Leaderboard Pingeurs**")
-        set_leaderboard_post(guild.id, channel.id, msg_ping.id, "pingeur")
+        try: msg_ping = await channel.fetch_message(ping_post[1])
+        except discord.NotFound: msg_ping = await channel.send("📊 **Leaderboard Pingeurs**"); set_leaderboard_post(guild.id, channel.id, msg_ping.id, "pingeur")
+    else: msg_ping = await channel.send("📊 **Leaderboard Pingeurs**"); set_leaderboard_post(guild.id, channel.id, msg_ping.id, "pingeur")
 
     top_ping = top_pingeurs(guild.id)
     ping_block = "\n".join([f"• <@{uid}> : {cnt} pings" for uid, cnt in top_ping]) or "_Aucun pingeur encore_"
     embed_ping = discord.Embed(title="📊 Leaderboard Pingeurs", color=discord.Color.gold())
     embed_ping.add_field(name="Top Pingeurs", value=ping_block, inline=False)
     await msg_ping.edit(embed=embed_ping)
-
 
 # ---------- Cog principal ----------
 class PingCog(commands.Cog):
@@ -395,12 +386,131 @@ class PingCog(commands.Cog):
     @app_commands.command(name="pingpanel", description="Publier le panneau de ping des percepteurs (défenses)")
     async def pingpanel(self, interaction: discord.Interaction):
         view = PingButtonsView(self.bot)
-        embed = discord.Embed(
-            title="🛡️ Panneau de défense",
-            description="Cliquez sur les boutons ci-dessous pour déclencher une alerte.",
-            color=discord.Color.blue()
-        )
+        embed = discord.Embed(title="🛡️ Panneau de défense",
+                              description="Cliquez sur les boutons ci-dessous pour déclencher une alerte.",
+                              color=discord.Color.blue())
         await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
+
+    # ---------- Commande /stats ----------
+    @app_commands.command(name="stats", description="Afficher vos stats de défense")
+    async def stats(self, interaction: discord.Interaction):
+        user_id = interaction.user.id
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("Erreur : pas de guild.", ephemeral=True)
+            return
+    
+        # ---------- Récupérer les défenses du joueur ----------
+        @with_db
+        def get_user_defenses(con, guild_id: int, user_id: int) -> List[sqlite3.Row]:
+            cur = con.cursor()
+            cur.execute("""
+                SELECT m.message_id, m.channel_id, m.created_ts, m.outcome,
+                       GROUP_CONCAT(p2.user_id) AS other_participants
+                FROM messages m
+                JOIN participants p ON p.message_id=m.message_id
+                LEFT JOIN participants p2 ON p2.message_id=m.message_id AND p2.user_id != ?
+                WHERE m.guild_id=? AND p.user_id=?
+                GROUP BY m.message_id
+                ORDER BY m.created_ts DESC
+                LIMIT 3
+            """, (user_id, guild_id, user_id))
+            return cur.fetchall()
+    
+        defenses = get_user_defenses(guild.id, user_id)
+        if not defenses:
+            await interaction.response.send_message("Vous n'avez aucune défense enregistrée.", ephemeral=True)
+            return
+    
+        # ---------- Stats globales ----------
+        @with_db
+        def get_totals(con, guild_id: int, user_id: int) -> Tuple[int,int,int]:
+            cur = con.cursor()
+            cur.execute("""
+                SELECT 
+                    SUM(CASE WHEN outcome='win' THEN 1 ELSE 0 END) AS wins,
+                    SUM(CASE WHEN outcome='loss' THEN 1 ELSE 0 END) AS losses,
+                    COUNT(*) AS total
+                FROM messages m
+                JOIN participants p ON p.message_id=m.message_id
+                WHERE m.guild_id=? AND p.user_id=?
+            """, (guild_id, user_id))
+            row = cur.fetchone()
+            return (row["total"] or 0, row["wins"] or 0, row["losses"] or 0)
+    
+        total_def, total_wins, total_losses = get_totals(guild.id, user_id)
+    
+        # ---------- Meilleur partenaire ----------
+        @with_db
+        def best_partner(con, guild_id: int, user_id: int) -> Optional[int]:
+            cur = con.cursor()
+            cur.execute("""
+                SELECT p2.user_id, COUNT(*) AS cnt
+                FROM participants p1
+                JOIN participants p2 ON p2.message_id = p1.message_id AND p2.user_id != p1.user_id
+                JOIN messages m ON m.message_id = p1.message_id
+                WHERE m.guild_id=? AND p1.user_id=?
+                GROUP BY p2.user_id
+                ORDER BY cnt DESC
+                LIMIT 1
+            """, (guild_id, user_id))
+            row = cur.fetchone()
+            return row["user_id"] if row else None
+    
+        partner_id = best_partner(guild.id, user_id)
+        partner_text = f"<@{partner_id}>" if partner_id else "Personne"
+    
+        # ---------- Tranche horaire la plus active ----------
+        @with_db
+        def get_hourly_activity(con, guild_id: int, user_id: int) -> int:
+            cur = con.cursor()
+            cur.execute("SELECT created_ts FROM messages m JOIN participants p ON p.message_id=m.message_id WHERE m.guild_id=? AND p.user_id=?", (guild_id, user_id))
+            rows = cur.fetchall()
+            counts = [0, 0, 0, 0]  # Matin, Journée, Soir, Nuit
+            for r in rows:
+                ts = r["created_ts"]
+                dt_paris = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(ZoneInfo("Europe/Paris"))
+                h = dt_paris.hour
+                if 6 <= h < 10:
+                    counts[0] += 1
+                elif 10 <= h < 18:
+                    counts[1] += 1
+                elif 18 <= h < 24:
+                    counts[2] += 1
+                else:
+                    counts[3] += 1
+            return counts.index(max(counts)) if rows else 1  # par défaut Journée
+    
+        top_bucket = get_hourly_activity(guild.id, user_id)
+        bucket_messages = [
+            "🌅 Matin: Mini défend les percepteurs avant son café, prenez exemple les gueux !",
+            "🌞 Journée: Chômage, télétravail, flemme au bureau, Mini gère vos percos !",
+            "🌙 Soir: Donnez à bouffer à vos gosses, Mini tient la baraque !",
+            "🌌 Nuit: Dormir c'est pour les faibles, Mini gère la garde de nuit"
+        ]
+        bucket_text = bucket_messages[top_bucket]
+    
+        # ---------- Défenses récentes ----------
+        recent_blocks = []
+        for d in defenses:
+            date_str = datetime.fromtimestamp(d["created_ts"], tz=timezone.utc).astimezone(ZoneInfo("Europe/Paris")).strftime("%d/%m/%Y %H:%M")
+            outcome = d["outcome"] or "⏳ En cours"
+            other_users = ", ".join([f"<@{int(uid)}>" for uid in d["other_participants"].split(",") if uid]) if d["other_participants"] else "_Aucun autre défenseur_"
+            recent_blocks.append(f"• {outcome} le {date_str} avec {other_users}")
+    
+        recent_text = "\n".join(recent_blocks)
+    
+        # ---------- Construction de l'embed ----------
+        embed = discord.Embed(
+            title=f"📊 Stats de défense de {interaction.user.display_name}",
+            color=discord.Color.orange()
+        )
+        embed.add_field(name="Stats générales", value=f"Total défenses : {total_def}\n🏆 Victoires : {total_wins}\n❌ Défaites : {total_losses}", inline=False)
+        embed.add_field(name="3 dernières défenses", value=recent_text, inline=False)
+        embed.add_field(name="Infos qui servent à rien 😉", value=f"{bucket_text}\nMini toujours en défense avec {partner_text}, prenez une chambre !", inline=False)
+    
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
     @commands.Cog.listener()
     async def on_reaction_add(self, reaction: discord.Reaction, user: discord.User):
@@ -408,14 +518,10 @@ class PingCog(commands.Cog):
         msg = reaction.message
         if msg.guild is None: return
         if str(reaction.emoji) in (EMOJI_VICTORY, EMOJI_DEFEAT, EMOJI_INCOMP, EMOJI_JOIN):
-            if str(reaction.emoji) == EMOJI_JOIN:
-                add_participant(msg.id, user.id)
-            elif str(reaction.emoji) == EMOJI_VICTORY:
-                set_outcome(msg.id, "win")
-            elif str(reaction.emoji) == EMOJI_DEFEAT:
-                set_outcome(msg.id, "loss")
-            elif str(reaction.emoji) == EMOJI_INCOMP:
-                set_incomplete(msg.id, True)
+            if str(reaction.emoji)==EMOJI_JOIN: add_participant(msg.id,user.id)
+            elif str(reaction.emoji)==EMOJI_VICTORY: set_outcome(msg.id,"win")
+            elif str(reaction.emoji)==EMOJI_DEFEAT: set_outcome(msg.id,"loss")
+            elif str(reaction.emoji)==EMOJI_INCOMP: set_incomplete(msg.id,True)
             emb = await build_ping_embed(msg)
             await msg.edit(embed=emb)
             await update_leaderboards(self.bot, msg.guild)
@@ -426,14 +532,10 @@ class PingCog(commands.Cog):
         msg = reaction.message
         if msg.guild is None: return
         if str(reaction.emoji) in (EMOJI_VICTORY, EMOJI_DEFEAT, EMOJI_INCOMP, EMOJI_JOIN):
-            if str(reaction.emoji) == EMOJI_JOIN:
-                remove_participant(msg.id, user.id)
-            elif str(reaction.emoji) == EMOJI_VICTORY:
-                set_outcome(msg.id, None)
-            elif str(reaction.emoji) == EMOJI_DEFEAT:
-                set_outcome(msg.id, None)
-            elif str(reaction.emoji) == EMOJI_INCOMP:
-                set_incomplete(msg.id, False)
+            if str(reaction.emoji)==EMOJI_JOIN: remove_participant(msg.id,user.id)
+            elif str(reaction.emoji)==EMOJI_VICTORY: set_outcome(msg.id,None)
+            elif str(reaction.emoji)==EMOJI_DEFEAT: set_outcome(msg.id,None)
+            elif str(reaction.emoji)==EMOJI_INCOMP: set_incomplete(msg.id,False)
             emb = await build_ping_embed(msg)
             await msg.edit(embed=emb)
             await update_leaderboards(self.bot, msg.guild)
@@ -445,11 +547,8 @@ class PingCog(commands.Cog):
 async def setup(bot: commands.Bot):
     cog = PingCog(bot)
     await bot.add_cog(cog)
-
-    # ID du serveur de test
     TEST_GUILD_ID = 1280234399610179634
     test_guild = discord.Object(id=TEST_GUILD_ID)
-
-    # Ajouter la commande au tree du serveur
     bot.tree.add_command(cog.pingpanel, guild=test_guild)
+    bot.tree.add_command(cog.stats, guild=test_guild)
     await bot.tree.sync(guild=test_guild)
