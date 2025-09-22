@@ -428,14 +428,15 @@ class PingCog(commands.Cog):
             date_str = datetime.fromtimestamp(d["created_ts"], tz=timezone.utc).astimezone(ZoneInfo("Europe/Paris")).strftime("%d/%m/%Y %H:%M")
             outcome = d["outcome"]
             if outcome == "win":
-                emoji = "🟢"
-                outcome_text = "Victoire"
+                outcome_text = f"🟢 Victoire"
             elif outcome == "loss":
-                emoji = "🔴"
-                outcome_text = "Défaite"
+                outcome_text = f"🔴 Défaite"
             else:
-                emoji = "⏳"
-                outcome_text = "En cours"
+                outcome_text = f"⏳ En cours"
+        
+            other_users = ", ".join([f"<@{int(uid)}>" for uid in d["participants"].split(",") if uid]) if d["participants"] else "_Aucun autre défenseur_"
+            recent_blocks.append(f"{outcome_text} le {date_str} avec {other_users}")
+
     
             other_users = ", ".join([f"<@{int(uid)}>" for uid in d["participants"].split(",") if uid]) if d["participants"] else "_Aucun autre défenseur_"
             recent_blocks.append(f"{emoji} {outcome_text} le {date_str} avec {other_users}")
