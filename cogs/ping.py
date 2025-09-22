@@ -227,17 +227,17 @@ async def build_ping_embed(msg: discord.Message) -> discord.Embed:
         color = discord.Color.green()
         etat = f"{EMOJI_VICTORY} **Défense gagnée**"
         if incomplete:
-            etat += f"\n{⚠️} Défense incomplète"
+            etat += f"\n⚠️ Défense incomplète"
     elif loss and not win:
         color = discord.Color.red()
         etat = f"{EMOJI_DEFEAT} **Défense perdue**"
         if incomplete:
-            etat += f"\n{EMOJI_INCOMP} Défense incomplète"
+            etat += f"\n⚠️ Défense incomplète"
     else:
         color = discord.Color.orange()
         etat = "⏳ **En cours / à confirmer**"
         if incomplete:
-            etat += f"\n{EMOJI_INCOMP} Défense incomplète"
+            etat += f"\n⚠️ Défense incomplète"
 
     # Défenseurs
     defenders_ids: List[int] = []
