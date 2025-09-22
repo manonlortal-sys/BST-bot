@@ -216,39 +216,44 @@ async def build_ping_embed(msg: discord.Message) -> discord.Embed:
     creator_id = get_message_creator(msg.id)
     creator_member = msg.guild.get_member(creator_id) if creator_id else None
 
+    # Récupère les réactions
     reactions = {str(r.emoji): r for r in msg.reactions}
     win  = (EMOJI_VICTORY in reactions and reactions[EMOJI_VICTORY].count > 0)
     loss = (EMOJI_DEFEAT in reactions and reactions[EMOJI_DEFEAT].count > 0)
     incomplete = (EMOJI_INCOMP in reactions and reactions[EMOJI_INCOMP].count > 0)
 
-    # Couleur et état principal
+    # Détermine l'état du combat
     if win and not loss:
         color = discord.Color.green()
         etat = f"{EMOJI_VICTORY} **Défense gagnée**"
+        if incomplete:
+            etat += f"\n{⚠️} Défense incomplète"
     elif loss and not win:
         color = discord.Color.red()
         etat = f"{EMOJI_DEFEAT} **Défense perdue**"
+        if incomplete:
+            etat += f"\n{EMOJI_INCOMP} Défense incomplète"
     else:
         color = discord.Color.orange()
         etat = "⏳ **En cours / à confirmer**"
+        if incomplete:
+            etat += f"\n{EMOJI_INCOMP} Défense incomplète"
 
-    # Ajout de l'info "Défense incomplète" si applicable
-    if incomplete:
-        etat += f"\n⚠️ **Défense incomplète**"
-
-    defenders_ids: list[int] = []
+    # Défenseurs
+    defenders_ids: List[int] = []
     if EMOJI_JOIN in reactions:
         async for u in reactions[EMOJI_JOIN].users():
             if not u.bot:
                 defenders_ids.append(u.id)
                 add_participant(msg.id, u.id)
 
-    names: list[str] = []
+    names: List[str] = []
     for uid in defenders_ids[:20]:
         m = msg.guild.get_member(uid)
         names.append(m.display_name if m else f"<@{uid}>")
     defenders_block = "• " + "\n• ".join(names) if names else "_Aucun défenseur pour le moment._"
 
+    # Construction de l'embed
     embed = discord.Embed(
         title="🛡️ Alerte Percepteur",
         description="⚠️ **Connectez-vous pour prendre la défense !**",
@@ -262,7 +267,6 @@ async def build_ping_embed(msg: discord.Message) -> discord.Embed:
 
     embed.set_footer(text="Ajoutez vos réactions : 🏆 gagné • ❌ perdu • 😡 incomplète • 👍 j'ai participé")
     return embed
-
 
 # ---------- View boutons ----------
 class PingButtonsView(discord.ui.View):
