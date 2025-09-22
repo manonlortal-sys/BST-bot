@@ -392,40 +392,40 @@ class PingCog(commands.Cog):
         await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
 
     # ---------- Commande /stats ----------
-    @app_commands.command(name="stats", description="Afficher vos stats de défense")
-    async def stats(self, interaction: discord.Interaction):
-        user_id = interaction.user.id
+    from typing import Optional
+    from discord import app_commands
+    
+    @app_commands.command(name="stats", description="Afficher les stats de défense d'un joueur")
+    @app_commands.describe(member="Le joueur dont vous voulez voir les stats (optionnel)")
+    async def stats(self, interaction: discord.Interaction, member: Optional[discord.Member] = None):
+        target = member or interaction.user
         guild = interaction.guild
         if not guild:
             await interaction.response.send_message("Erreur : pas de guild.", ephemeral=True)
             return
     
-        # Récupérer les 3 dernières défenses
-        defenses = get_player_defenses(guild.id, user_id, limit=3)
+        defenses = get_player_defenses(guild.id, target.id, limit=3)
         if not defenses:
-            await interaction.response.send_message("Vous n'avez aucune défense enregistrée.", ephemeral=True)
+            await interaction.response.send_message(f"{target.display_name} n'a aucune défense enregistrée.", ephemeral=False)
             return
     
-        # Statistiques générales
-        totals = get_player_totals(guild.id, user_id)
+        totals = get_player_totals(guild.id, target.id)
         total_def, total_wins, total_losses = totals["total"], totals["wins"], totals["losses"]
     
-        # Meilleur partenaire
-        partner_id = get_favorite_partner(guild.id, user_id)
+        partner_id = get_favorite_partner(guild.id, target.id)
         partner_text = f"<@{partner_id}>" if partner_id else "Personne"
     
-        # Tranche horaire la plus active
         hourly_counts = hourly_split_7d(guild.id)
         top_bucket = hourly_counts.index(max(hourly_counts)) if sum(hourly_counts) > 0 else 1
         bucket_messages = [
-            "🌅 Matin: Mini défend les percepteurs avant son café, prenez exemple les gueux !",
-            "🌞 Journée: Chômage, télétravail, flemme au bureau, Mini gère vos percos !",
-            "🌙 Soir: Donnez à bouffer à vos gosses, Mini tient la baraque !",
-            "🌌 Nuit: Dormir c'est pour les faibles, Mini gère la garde de nuit"
+            "🌅 Défenseur du Matin: Mini défend les percepteurs avant son café, prenez exemple !",
+            "🌞 Défenseur de la Journée: Chômage, télétravail, flemme au bureau, Mini gère vos percos !",
+            "🌙 Défenseur du Soir: Donnez à bouffer à vos gosses, Mini tient la baraque !",
+            "🌌 Défenseur de la Nuit: Dormir c'est pour les faibles, Mini gère la garde de nuit"
         ]
         bucket_text = bucket_messages[top_bucket]
     
-        # Construire le texte des 3 dernières défenses avec emojis
+        # Construire les 3 dernières défenses avec emoji
         recent_blocks = []
         for d in defenses:
             date_str = datetime.fromtimestamp(d["created_ts"], tz=timezone.utc).astimezone(ZoneInfo("Europe/Paris")).strftime("%d/%m/%Y %H:%M")
@@ -441,24 +441,32 @@ class PingCog(commands.Cog):
                 outcome_text = "En cours"
     
             other_users = ", ".join([f"<@{int(uid)}>" for uid in d["participants"].split(",") if uid]) if d["participants"] else "_Aucun autre défenseur_"
-            recent_blocks.append(f"• {emoji} {outcome_text} le {date_str} avec {other_users}")
+            recent_blocks.append(f"{emoji} {outcome_text} le {date_str} avec {other_users}")
     
         recent_text = "\n".join(recent_blocks)
     
         # Construction de l'embed
         embed = discord.Embed(
-            title=f"📊 Stats de défense de {interaction.user.display_name}",
+            title=f"📊 Stats de défense de {target.display_name}",
             color=discord.Color.orange()
         )
         embed.add_field(name="Stats générales", value=f"Total défenses : {total_def}\n🏆 Victoires : {total_wins}\n❌ Défaites : {total_losses}", inline=False)
         embed.add_field(name="3 dernières défenses", value=recent_text, inline=False)
-        embed.add_field(name="Infos qui servent à rien 😉",
-                        value=f"{bucket_text}\n\n🛡️ Collègue de défenses\nMini toujours en défense avec {partner_text}, prenez une chambre !",
+        embed.add_field(name="Infos personnelles 😉",
+                        value=f"{bucket_text}\n\n🛡️ Collègue de défenses 🛡️\nMini toujours en défense avec {partner_text}, prenez une chambre !",
                         inline=False)
     
-        # Message public pour tout le monde
         await interaction.response.send_message(embed=embed, ephemeral=False)
-
+    
+    # ---------- Autocomplétion ----------
+    @stats.autocomplete("member")
+    async def stats_autocomplete(interaction: discord.Interaction, current: str):
+        guild = interaction.guild
+        if not guild: return []
+        return [
+            app_commands.Choice(name=m.display_name, value=m.id)
+            for m in guild.members if current.lower() in m.display_name.lower()
+        ][:25]
 
 
     @commands.Cog.listener()
