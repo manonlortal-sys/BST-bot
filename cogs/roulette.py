@@ -1,305 +1,415 @@
+from __future__ import annotations
 import os
-import random
-import asyncio
+import time
 import sqlite3
+import asyncio
+from datetime import datetime, timezone
+from typing import Optional, List, Tuple
+
 import discord
+from discord import app_commands, PartialEmoji
 from discord.ext import commands
 
-CROUPIER_ROLE_ID = int(os.getenv("CROUPIER_ROLE_ID", "0"))
-SPIN_GIF_URL = os.getenv("SPIN_GIF_URL", "")
-COMMISSION_PERCENT = float(os.getenv("COMMISSION_PERCENT", "5.0"))
+# ---------- ENV ----------
+ALERT_CHANNEL_ID = int(os.getenv("ALERT_CHANNEL_ID", "0"))
 LEADERBOARD_CHANNEL_ID = int(os.getenv("LEADERBOARD_CHANNEL_ID", "0"))
+ROLE_DEF_ID = int(os.getenv("ROLE_DEF_ID", "0"))
+ROLE_DEF2_ID = int(os.getenv("ROLE_DEF2_ID", "0"))
+ROLE_TEST_ID = int(os.getenv("ROLE_TEST_ID", "0"))
 
-RED_NUMBERS = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
-DB_PATH = "roulette.db"
+# ---------- Constantes ----------
+EMOJI_VICTORY = "🏆"
+EMOJI_DEFEAT = "❌"
+EMOJI_INCOMP = "😡"
+EMOJI_JOIN = "👍"
 
-# ---------- Database setup ----------
-conn = sqlite3.connect(DB_PATH)
-c = conn.cursor()
-c.execute("""
-CREATE TABLE IF NOT EXISTS stats (
-    guild_id INTEGER,
-    user_id INTEGER,
-    mises INTEGER DEFAULT 0,
-    net INTEGER DEFAULT 0,
-    victoires INTEGER DEFAULT 0,
-    defaites INTEGER DEFAULT 0,
-    commissions INTEGER DEFAULT 0,
-    PRIMARY KEY (guild_id, user_id)
-)
-""")
-c.execute("""
-CREATE TABLE IF NOT EXISTS leaderboard_msg (
-    guild_id INTEGER PRIMARY KEY,
-    message_id INTEGER
-)
-""")
-conn.commit()
+BUCKETS = [
+    ("🌅 Matin (6–10)", 6, 10),
+    ("🌞 Journée (10–18)", 10, 18),
+    ("🌙 Soir (18–00)", 18, 24),
+    ("🌌 Nuit (00–6)", 0, 6),
+]
 
-def update_stats(guild_id, user_id, mise=0, net=0, victoire=False, commission=0):
-    c.execute("SELECT * FROM stats WHERE guild_id=? AND user_id=?", (guild_id, user_id))
-    row = c.fetchone()
-    if row:
-        mises_total = row[2] + mise
-        net_total = row[3] + net
-        victoires_total = row[4] + (1 if victoire else 0)
-        defaites_total = row[5] + (0 if victoire else 1)
-        commissions_total = row[6] + commission
-        c.execute("""
-        UPDATE stats SET mises=?, net=?, victoires=?, defaites=?, commissions=? 
-        WHERE guild_id=? AND user_id=?
-        """, (mises_total, net_total, victoires_total, defaites_total, commissions_total, guild_id, user_id))
-    else:
-        c.execute("""
-        INSERT INTO stats(guild_id,user_id,mises,net,victoires,defaites,commissions)
-        VALUES(?,?,?,?,?,?,?)
-        """, (guild_id,user_id,mise,net,(1 if victoire else 0),(0 if victoire else 1), commission))
-    conn.commit()
+DB_PATH = "defense_leaderboard.db"
 
-async def get_or_create_leaderboard_message(bot, guild):
-    c.execute("SELECT message_id FROM leaderboard_msg WHERE guild_id=?", (guild.id,))
-    row = c.fetchone()
-    channel = guild.get_channel(LEADERBOARD_CHANNEL_ID)
-    if not channel:
-        return None
-    if row:
-        try:
-            msg = await channel.fetch_message(row[0])
-            return msg
-        except:
-            pass
-    # create new message
-    msg = await channel.send("📊 Leaderboard en cours de chargement…")
-    c.execute("INSERT OR REPLACE INTO leaderboard_msg(guild_id,message_id) VALUES(?,?)", (guild.id,msg.id))
-    conn.commit()
-    return msg
+def utcnow_i() -> int:
+    return int(time.time())
 
-async def update_leaderboard(bot, guild):
-    msg = await get_or_create_leaderboard_message(bot, guild)
-    if not msg:
-        return
-    # Joueurs
-    c.execute("SELECT user_id,mises,net,victoires,defaites,commissions FROM stats WHERE guild_id=?", (guild.id,))
-    rows = c.fetchall()
-    if not rows:
-        return
-    # Joueurs
-    joueur_rows = sorted(rows, key=lambda x: x[1], reverse=True)
-    # Croupiers
-    croupier_rows = sorted([r for r in rows if r[5]>0], key=lambda x: x[5], reverse=True)
-    text = "📊 **Leaderboard joueurs**\n"
-    for i,row in enumerate(joueur_rows,1):
-        member = guild.get_member(row[0])
-        name = member.display_name if member else f"ID:{row[0]}"
-        text += f"{i}️⃣ **{name}** — Misé : {row[1]}k | Net : {row[2]}k | Victoires : {row[3]} | Défaites : {row[4]}\n"
-    text += "\n📊 **Leaderboard croupiers**\n"
-    for i,row in enumerate(croupier_rows,1):
-        member = guild.get_member(row[0])
-        name = member.display_name if member else f"ID:{row[0]}"
-        text += f"{i}️⃣ **{name}** — Commissions : {row[5]}k\n"
-    await msg.edit(content=text)
-
-# ---------- Cog ----------
-class Roulette(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
-        self.active_duels = {}  # guild_id -> duel en cours
-
-    @discord.app_commands.command(name="roulette", description="Lancer une roulette à deux joueurs (avec croupier)")
-    @discord.app_commands.describe(mise="Mise en kamas (entier positif, minimum 1000)")
-    async def roulette_cmd(self, interaction: discord.Interaction, mise: int):
-        if mise < 1000:
-            return await interaction.response.send_message("💸 La mise minimale est de **1000k**.", ephemeral=True)
-        guild_id = interaction.guild.id
-
-        # 1️⃣ Embed principal initial
-        main_embed = discord.Embed(
-            title="🎰 **Un joueur veut lancer la roulette !**",
-            description=f"Créateur : {interaction.user.mention}\nMise : {mise}k\nEn attente du type de duel et du choix du camp…",
-            color=discord.Color.orange()
+# ---------- DB helpers ----------
+def create_db():
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS messages(
+            message_id INTEGER PRIMARY KEY,
+            guild_id   INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL,
+            created_ts INTEGER NOT NULL,
+            outcome    TEXT,
+            incomplete INTEGER,
+            last_ts    INTEGER NOT NULL,
+            creator_id INTEGER
         )
-        main_msg = await interaction.response.send_message(embed=main_embed)
-        main_msg = await interaction.original_response()
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS participants(
+            message_id INTEGER NOT NULL,
+            user_id    INTEGER NOT NULL,
+            PRIMARY KEY(message_id, user_id)
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS leaderboard_posts(
+            guild_id   INTEGER,
+            channel_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL,
+            type       TEXT NOT NULL,
+            PRIMARY KEY (guild_id, type)
+        )
+    """)
+    con.commit()
+    con.close()
 
-        # 2️⃣ Choix type de duel (ephemeral pour le créateur)
-        type_view = discord.ui.View(timeout=120)
-        duel_type_result = {}
+def with_db(func):
+    def wrapper(*args, **kwargs):
+        con = sqlite3.connect(DB_PATH)
+        con.row_factory = sqlite3.Row
+        try:
+            res = func(con, *args, **kwargs)
+            con.commit()
+            return res
+        finally:
+            con.close()
+    return wrapper
 
-        async def select_type(inter, t):
-            if inter.user.id != interaction.user.id:
-                await inter.response.send_message("Seul le créateur peut choisir le type.", ephemeral=True)
-                return
-            duel_type_result['type'] = t
-            type_view.stop()
-            await inter.response.defer()  # pas de nouveau message
+# ---------- DB functions ----------
+@with_db
+def upsert_message(con: sqlite3.Connection, message: discord.Message, creator_id: Optional[int] = None):
+    cur = con.cursor()
+    cur.execute("""
+        INSERT INTO messages(message_id, guild_id, channel_id, created_ts, outcome, incomplete, last_ts, creator_id)
+        VALUES (?,?,?,?,NULL,0,?,?)
+        ON CONFLICT(message_id) DO NOTHING
+    """, (message.id, message.guild.id, message.channel.id,
+          int(message.created_at.replace(tzinfo=timezone.utc).timestamp()), utcnow_i(), creator_id))
 
-        for label,t in [("🔴 Rouge / ⚫ Noir","Rouge / Noir"),("⚖️ Pair / Impair","Pair / Impair"),("1️⃣-18 / 19-36","1-18 / 19-36")]:
-            btn = discord.ui.Button(label=label, style=discord.ButtonStyle.primary)
-            btn.callback = lambda inter, t=t: select_type(inter, t)
-            type_view.add_item(btn)
+@with_db
+def get_message_creator(con: sqlite3.Connection, message_id: int) -> Optional[int]:
+    cur = con.cursor()
+    cur.execute("SELECT creator_id FROM messages WHERE message_id=?", (message_id,))
+    row = cur.fetchone()
+    return row["creator_id"] if row else None
 
-        await interaction.user.send("Choisis le type de duel :", view=type_view)
-        await type_view.wait()
-        if 'type' not in duel_type_result:
-            return await main_msg.edit(embed=discord.Embed(title="⏳ Duel annulé", description="Aucun type choisi.", color=discord.Color.red()))
+@with_db
+def set_outcome(con: sqlite3.Connection, message_id: int, outcome: Optional[str]):
+    cur = con.cursor()
+    cur.execute("UPDATE messages SET outcome=?, last_ts=? WHERE message_id=?", (outcome, utcnow_i(), message_id))
 
-        duel_type = duel_type_result['type']
+@with_db
+def set_incomplete(con: sqlite3.Connection, message_id: int, incomplete: bool):
+    cur = con.cursor()
+    cur.execute("UPDATE messages SET incomplete=?, last_ts=? WHERE message_id=?", (1 if incomplete else 0, utcnow_i(), message_id))
 
-        # 3️⃣ Choix du camp (ephemeral pour le créateur)
-        camp_view = discord.ui.View(timeout=120)
-        camp_choice = {}
+@with_db
+def add_participant(con: sqlite3.Connection, message_id: int, user_id: int):
+    cur = con.cursor()
+    cur.execute("""
+        INSERT INTO participants(message_id, user_id) VALUES (?,?)
+        ON CONFLICT(message_id, user_id) DO NOTHING
+    """, (message_id, user_id))
 
-        async def select_camp(inter, c):
-            if inter.user.id != interaction.user.id:
-                await inter.response.send_message("Seul le créateur peut choisir le camp.", ephemeral=True)
-                return
-            camp_choice['camp'] = c
-            camp_view.stop()
-            await inter.response.defer()
+@with_db
+def remove_participant(con: sqlite3.Connection, message_id: int, user_id: int):
+    cur = con.cursor()
+    cur.execute("DELETE FROM participants WHERE message_id=? AND user_id=?", (message_id, user_id))
 
-        camp_options = []
-        if duel_type=="Rouge / Noir":
-            camp_options = [("🔴 Rouge","Rouge"),("⚫ Noir","Noir")]
-        elif duel_type=="Pair / Impair":
-            camp_options = [("Pair","Pair"),("Impair","Impair")]
-        else:
-            camp_options = [("1-18","1-18"),("19-36","19-36")]
+@with_db
+def get_leaderboard_post(con: sqlite3.Connection, guild_id: int, type_: str) -> Optional[Tuple[int,int]]:
+    cur = con.cursor()
+    cur.execute("SELECT channel_id, message_id FROM leaderboard_posts WHERE guild_id=? AND type=?", (guild_id, type_))
+    row = cur.fetchone()
+    return (row["channel_id"], row["message_id"]) if row else None
 
-        for lbl,c in camp_options:
-            b = discord.ui.Button(label=lbl, style=discord.ButtonStyle.primary)
-            b.callback = lambda inter, c=c: select_camp(inter, c)
-            camp_view.add_item(b)
+@with_db
+def set_leaderboard_post(con: sqlite3.Connection, guild_id: int, channel_id: int, message_id: int, type_: str):
+    cur = con.cursor()
+    cur.execute("""
+        INSERT INTO leaderboard_posts(guild_id, channel_id, message_id, type)
+        VALUES (?,?,?,?)
+        ON CONFLICT(guild_id, type) DO UPDATE SET channel_id=excluded.channel_id, message_id=excluded.message_id
+    """, (guild_id, channel_id, message_id, type_))
 
-        await interaction.user.send("Choisis ton camp :", view=camp_view)
-        await camp_view.wait()
-        if 'camp' not in camp_choice:
-            return await main_msg.edit(embed=discord.Embed(title="⏳ Duel annulé", description="Aucun camp choisi.", color=discord.Color.red()))
+@with_db
+def agg_totals_all(con: sqlite3.Connection, guild_id: int) -> Tuple[int,int,int,int]:
+    cur = con.cursor()
+    cur.execute("""
+        SELECT SUM(CASE WHEN outcome='win'  THEN 1 ELSE 0 END),
+               SUM(CASE WHEN outcome='loss' THEN 1 ELSE 0 END),
+               SUM(CASE WHEN incomplete=1  THEN 1 ELSE 0 END),
+               COUNT(*)
+        FROM messages
+        WHERE guild_id=?
+    """, (guild_id,))
+    w,l,inc,tot = cur.fetchone()
+    return (w or 0, l or 0, inc or 0, tot or 0)
 
-        starter_choice = camp_choice['camp']
+@with_db
+def top_defenders(con: sqlite3.Connection, guild_id: int, limit: int = 20) -> List[Tuple[int,int]]:
+    cur = con.cursor()
+    cur.execute("""
+        SELECT p.user_id, COUNT(*) as cnt
+        FROM participants p
+        JOIN messages m ON m.message_id=p.message_id
+        WHERE m.guild_id=?
+        GROUP BY p.user_id
+        ORDER BY cnt DESC
+        LIMIT ?
+    """, (guild_id, limit))
+    return [(row["user_id"], row["cnt"]) for row in cur.fetchall()]
 
-        # Mise à jour embed principal
-        main_embed.description = f"Créateur : {interaction.user.mention}\nMise : {mise}k\nType de duel : {duel_type}\nCamp du créateur : {starter_choice}\nEn attente d’un adversaire…"
-        await main_msg.edit(embed=main_embed)
+@with_db
+def top_pingeurs(con: sqlite3.Connection, guild_id: int, limit: int = 20) -> List[Tuple[int,int]]:
+    cur = con.cursor()
+    cur.execute("""
+        SELECT creator_id, COUNT(*) as cnt
+        FROM messages
+        WHERE guild_id=? AND creator_id IS NOT NULL
+        GROUP BY creator_id
+        ORDER BY cnt DESC
+        LIMIT ?
+    """, (guild_id, limit))
+    return [(row["creator_id"], row["cnt"]) for row in cur.fetchall()]
 
-        # 4️⃣ Attente adversaire avec barre animée
-        join_view = discord.ui.View(timeout=300)
-        joiner_result = {}
+@with_db
+def hourly_split_7d(con: sqlite3.Connection, guild_id: int) -> List[int]:
+    since = utcnow_i() - 7*24*3600
+    cur = con.cursor()
+    cur.execute("SELECT created_ts FROM messages WHERE guild_id=? AND created_ts>=?", (guild_id, since))
+    rows = cur.fetchall()
+    counts = [0,0,0,0]
+    for r in rows:
+        h = datetime.fromtimestamp(r["created_ts"], tz=timezone.utc).hour
+        h_local = (h + 1) % 24
+        if 6 <= h_local < 10: counts[0]+=1
+        elif 10 <= h_local < 18: counts[1]+=1
+        elif 18 <= h_local < 24: counts[2]+=1
+        else: counts[3]+=1
+    return counts
 
-        async def join_callback(inter2: discord.Interaction):
-            if inter2.user.id==interaction.user.id:
-                await inter2.response.send_message("Tu es déjà le créateur.", ephemeral=True)
-                return
-            if joiner_result.get('user'):
-                await inter2.response.send_message("Un adversaire a déjà rejoint.", ephemeral=True)
-                return
-            joiner_result['user']=inter2.user
-            await inter2.response.send_message(f"{inter2.user.mention} a rejoint !", ephemeral=True)
-            join_view.stop()
+# ---------- Embed constructeur ----------
+async def build_ping_embed(msg: discord.Message) -> discord.Embed:
+    creator_id = get_message_creator(msg.id)
+    creator_member = msg.guild.get_member(creator_id) if creator_id else None
 
-        btn_join = discord.ui.Button(label="🤝 Rejoindre", style=discord.ButtonStyle.success)
-        btn_join.callback = join_callback
-        join_view.add_item(btn_join)
-        await main_msg.edit(view=join_view)
+    reactions = {str(r.emoji): r for r in msg.reactions}
+    win  = (EMOJI_VICTORY in reactions and reactions[EMOJI_VICTORY].count > 0)
+    loss = (EMOJI_DEFEAT in reactions and reactions[EMOJI_DEFEAT].count > 0)
 
-        bar = ["▯▯▯▯▯","▮▯▯▯▯","▮▮▯▯▯","▮▮▮▯▯","▮▮▮▮▯","▮▮▮▮▮"]
-        while not joiner_result.get('user'):
-            for b in bar+bar[::-1][1:-1]:  # oscillation
-                if joiner_result.get('user'):
-                    break
-                main_embed.description = f"Créateur : {interaction.user.mention}\nMise : {mise}k\nType de duel : {duel_type}\nCamp du créateur : {starter_choice}\nEn attente d’un adversaire… {b}"
-                await main_msg.edit(embed=main_embed)
-                await asyncio.sleep(0.5)
-        await join_view.wait()
-        if 'user' not in joiner_result:
-            return await main_msg.edit(embed=discord.Embed(title="⏳ Duel annulé", description="Personne n’a rejoint.", color=discord.Color.red()), view=None)
+    if win and not loss:
+        color = discord.Color.green()
+        etat = f"{EMOJI_VICTORY} **Défense gagnée**"
+    elif loss and not win:
+        color = discord.Color.red()
+        etat = f"{EMOJI_DEFEAT} **Défense perdue**"
+    else:
+        color = discord.Color.orange()
+        etat = "⏳ **En cours / à confirmer**"
 
-        joiner = joiner_result['user']
+    defenders_ids: List[int] = []
+    if EMOJI_JOIN in reactions:
+        async for u in reactions[EMOJI_JOIN].users():
+            if not u.bot:
+                defenders_ids.append(u.id)
+                add_participant(msg.id, u.id)
 
-        # 5️⃣ Croupier validation
-        if CROUPIER_ROLE_ID:
-            croupier_ping = f"<@&{CROUPIER_ROLE_ID}>"
-        else:
-            croupier_ping = "Croupier requis"
+    names: List[str] = []
+    for uid in defenders_ids[:20]:
+        m = msg.guild.get_member(uid)
+        names.append(m.display_name if m else f"<@{uid}>")
+    defenders_block = "• " + "\n• ".join(names) if names else "_Aucun défenseur pour le moment._"
 
-        await interaction.channel.send(f"📢 {croupier_ping}, un croupier doit valider les mises !")
+    embed = discord.Embed(
+        title="🛡️ Alerte Percepteur",
+        description="⚠️ **Connectez-vous pour prendre la défense !**",
+        color=color,
+    )
+    embed.add_field(name="État du combat", value=etat, inline=False)
+    embed.add_field(name="Défenseurs (👍)", value=defenders_block, inline=False)
 
-        val_view = discord.ui.View(timeout=120)
-        validated = {}
+    if creator_member:
+        embed.add_field(name="⚡ Déclenché par", value=creator_member.display_name, inline=False)
 
-        async def val_callback(inter2: discord.Interaction):
-            if CROUPIER_ROLE_ID and not any(r.id==CROUPIER_ROLE_ID for r in inter2.user.roles):
-                await inter2.response.send_message("Réservé au croupier.", ephemeral=True)
-                return
-            validated['c'] = inter2.user
-            await inter2.response.send_message(f"Mises validées par {inter2.user.mention}", ephemeral=True)
-            val_view.stop()
+    embed.set_footer(text="Ajoutez vos réactions : 🏆 gagné • ❌ perdu • 😡 incomplète • 👍 j'ai participé")
+    return embed
 
-        btn_val = discord.ui.Button(label="✅ Valider mises", style=discord.ButtonStyle.success)
-        btn_val.callback = val_callback
-        val_view.add_item(btn_val)
+# ---------- View boutons ----------
+class PingButtonsView(discord.ui.View):
+    def __init__(self, bot: commands.Bot):
+        super().__init__(timeout=None)
+        self.bot = bot
 
-        pot_total = mise*2
-        commission = int(round(pot_total*(COMMISSION_PERCENT/100.0)))
-        gain_net = pot_total - commission
+    @discord.ui.button(label="Guilde 1", style=discord.ButtonStyle.primary, emoji=PartialEmoji(name="Wanted", id=123456789012345678))
+    async def btn_def(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle_click(interaction, side="Def")
 
-        main_embed.description = f"Créateur : {interaction.user.mention} ({starter_choice})\nAdversaire : {joiner.mention}\nMises : {mise}k chacun\nPot total : {pot_total}k\n💰 Commission croupier ({COMMISSION_PERCENT}%): {commission}k\nEn attente de validation du croupier..."
-        await main_msg.edit(embed=main_embed, view=val_view)
-        await val_view.wait()
-        if 'c' not in validated:
-            return await main_msg.edit(embed=discord.Embed(title="⏳ Duel annulé", description="Mises non validées par un croupier.", color=discord.Color.red()), view=None)
+    @discord.ui.button(label="Guilde 2", style=discord.ButtonStyle.danger, emoji=PartialEmoji(name="Wanted", id=123456789012345678))
+    async def btn_def2(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle_click(interaction, side="Def2")
 
-        croupier_user = validated['c']
+    @discord.ui.button(label="TEST (Admin)", style=discord.ButtonStyle.secondary)
+    async def btn_test(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not any(r.permissions.administrator for r in interaction.user.roles):
+            await interaction.response.send_message("Bouton réservé aux admins.", ephemeral=True)
+            return
+        await self._handle_click(interaction, side="Test")
 
-        # 6️⃣ Roulette animation
-        spin_embed = discord.Embed(title="🎡 La roulette tourne…", description="Bonne chance !", color=discord.Color.orange())
-        if SPIN_GIF_URL:
-            spin_embed.set_image(url=SPIN_GIF_URL)
-        spin_msg = await interaction.channel.send(embed=spin_embed)
-        for i in range(5,0,-1):
-            spin_embed.description = f"Roulette en cours… {i}"
-            await spin_msg.edit(embed=spin_embed)
-            await asyncio.sleep(1)
-        await spin_msg.delete()  # disparait à la fin
+    async def _handle_click(self, interaction: discord.Interaction, side: str):
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=False)
+        except Exception:
+            pass
 
-        # 7️⃣ Résultat
-        n = random.randint(0,36)
-        color = "vert" if n==0 else ("rouge" if n in RED_NUMBERS else "noir")
-        parity = "pair" if n!=0 and n%2==0 else "impair"
-        interval = "1-18" if 1<=n<=18 else ("19-36" if 19<=n<=36 else "0")
+        guild = interaction.guild
+        if guild is None or ALERT_CHANNEL_ID == 0:
+            return
 
-        def starter_wins():
-            if duel_type=="Rouge / Noir": return starter_choice.lower() in color.lower()
-            if duel_type=="Pair / Impair": return starter_choice.lower() == parity
-            if duel_type=="1-18 / 19-36": return starter_choice == interval
-            return False
+        alert_channel = guild.get_channel(ALERT_CHANNEL_ID)
+        if not isinstance(alert_channel, discord.TextChannel):
+            return
 
-        winner = interaction.user if starter_wins() else joiner
-        loser = joiner if winner==interaction.user else interaction.user
+        role_id = 0
+        if side == "Def":
+            role_id = ROLE_DEF_ID
+        elif side == "Def2":
+            role_id = ROLE_DEF2_ID
+        elif side == "Test":
+            role_id = ROLE_TEST_ID
 
-        main_embed.title = "✅ Résultat de la roulette"
-        main_embed.color = discord.Color.green() if winner==interaction.user else discord.Color.red()
-        main_embed.description = f"Nombre tiré : {n} ({color}) — {parity} — {interval}\nGagnant : {winner.mention}\nPerdant : {loser.mention}\nGain net : {gain_net}k\nCommission croupier : {commission}k\nCroupier : {croupier_user.mention}"
-        await main_msg.edit(embed=main_embed, view=None)
+        role_mention = f"<@&{role_id}>" if role_id != 0 else ""
+        content = f"{role_mention} — **Percepteur attaqué !** Merci de vous connecter." if role_mention else "**Percepteur attaqué !** Merci de vous connecter."
 
-        # 8️⃣ Stats + leaderboard
-        update_stats(guild_id, interaction.user.id, mise=mise, net=(gain_net-mise) if winner==interaction.user else -mise, victoire=(winner==interaction.user))
-        update_stats(guild_id, joiner.id, mise=mise, net=(gain_net-mise) if winner==joiner else -mise, victoire=(winner==joiner))
-        update_stats(guild_id, croupier_user.id, commission=commission)
-        await update_leaderboard(self.bot, interaction.guild)
+        msg = await alert_channel.send(content)
+        upsert_message(msg, creator_id=interaction.user.id)
+        emb = await build_ping_embed(msg)
+        await msg.edit(embed=emb)
 
-    @discord.app_commands.command(name="stats", description="Voir vos stats personnelles")
-    async def stats_cmd(self, interaction: discord.Interaction):
-        c.execute("SELECT mises,net,victoires,defaites,commissions FROM stats WHERE guild_id=? AND user_id=?", (interaction.guild.id,interaction.user.id))
-        row = c.fetchone()
-        if not row:
-            return await interaction.response.send_message("Aucune statistique pour vous.", ephemeral=True)
-        embed = discord.Embed(title=f"📊 Stats de {interaction.user.display_name}", color=discord.Color.blurple())
-        embed.add_field(name="Mises totales", value=f"{row[0]}k")
-        embed.add_field(name="Gains/Pertes", value=f"{row[1]}k")
-        embed.add_field(name="Victoires", value=f"{row[2]}")
-        embed.add_field(name="Défaites", value=f"{row[3]}")
-        embed.add_field(name="Commissions perçues", value=f"{row[4]}k")
-        await interaction.response.send_message(embed=embed)
+        # Met à jour les leaderboards automatiquement
+        await update_leaderboards(self.bot, guild)
 
+        try:
+            await interaction.followup.send("✅ Alerte envoyée.", ephemeral=True)
+        except Exception:
+            pass
+
+# ---------- Leaderboards ----------
+async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
+    channel = bot.get_channel(LEADERBOARD_CHANNEL_ID)
+    if channel is None:
+        return
+
+    # Leaderboard Défense
+    def_post = get_leaderboard_post(guild.id, "defense")
+    if def_post:
+        msg_def = await channel.fetch_message(def_post[1])
+    else:
+        msg_def = await channel.send("📊 **Leaderboard Défense**")
+        set_leaderboard_post(guild.id, channel.id, msg_def.id, "defense")
+
+    total_w, total_l, total_inc, total_att = agg_totals_all(guild.id)
+    top_def = top_defenders(guild.id)
+    hourly = hourly_split_7d(guild.id)
+
+    top_block = "\n".join([f"• <@{uid}> : {cnt} défenses" for uid, cnt in top_def]) or "_Aucun défenseur encore_"
+    ratio = f"{(total_w/total_att*100):.1f}%" if total_att else "0%"
+
+    embed_def = discord.Embed(title="📊 Leaderboard Défense", color=discord.Color.blue())
+    embed_def.add_field(name="Top défenseurs", value=top_block, inline=False)
+    embed_def.add_field(
+        name="Stats globales",
+        value=f"Attaques : {total_att}\nVictoire : {total_w}\nDéfaites : {total_l}\nIncomplet : {total_inc}\nRatio victoire : {ratio}",
+        inline=False
+    )
+    embed_def.add_field(
+        name="Tranches horaires (7j)",
+        value=f"🌅 Matin : {hourly[0]}\n🌞 Journée : {hourly[1]}\n🌙 Soir : {hourly[2]}\n🌌 Nuit : {hourly[3]}",
+        inline=False
+    )
+    await msg_def.edit(embed=embed_def)
+
+    # Leaderboard Pingeurs
+    ping_post = get_leaderboard_post(guild.id, "pingeur")
+    if ping_post:
+        msg_ping = await channel.fetch_message(ping_post[1])
+    else:
+        msg_ping = await channel.send("📊 **Leaderboard Pingeurs**")
+        set_leaderboard_post(guild.id, channel.id, msg_ping.id, "pingeur")
+
+    top_ping = top_pingeurs(guild.id)
+    ping_block = "\n".join([f"• <@{uid}> : {cnt} pings" for uid, cnt in top_ping]) or "_Aucun pingeur encore_"
+    embed_ping = discord.Embed(title="📊 Leaderboard Pingeurs", color=discord.Color.gold())
+    embed_ping.add_field(name="Top Pingeurs", value=ping_block, inline=False)
+    await msg_ping.edit(embed=embed_ping)
+
+# ---------- Cog principal ----------
+class PingCog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        create_db()
+
+    @app_commands.command(name="pingpanel", description="Publier le panneau de ping des percepteurs (défenses)")
+    async def pingpanel(self, interaction: discord.Interaction):
+        view = PingButtonsView(self.bot)
+        embed = discord.Embed(
+            title="🛡️ Panneau de défense",
+            description="Cliquez sur les boutons ci-dessous pour déclencher une alerte.",
+            color=discord.Color.blue()
+        )
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
+
+    @commands.Cog.listener()
+    async def on_reaction_add(self, reaction: discord.Reaction, user: discord.User):
+        if user.bot: return
+        msg = reaction.message
+        if msg.guild is None: return
+        if str(reaction.emoji) in (EMOJI_VICTORY, EMOJI_DEFEAT, EMOJI_INCOMP, EMOJI_JOIN):
+            if str(reaction.emoji) == EMOJI_JOIN:
+                add_participant(msg.id, user.id)
+            elif str(reaction.emoji) == EMOJI_VICTORY:
+                set_outcome(msg.id, "win")
+            elif str(reaction.emoji) == EMOJI_DEFEAT:
+                set_outcome(msg.id, "loss")
+            elif str(reaction.emoji) == EMOJI_INCOMP:
+                set_incomplete(msg.id, True)
+            emb = await build_ping_embed(msg)
+            await msg.edit(embed=emb)
+            await update_leaderboards(self.bot, msg.guild)
+
+    @commands.Cog.listener()
+    async def on_reaction_remove(self, reaction: discord.Reaction, user: discord.User):
+        if user.bot: return
+        msg = reaction.message
+        if msg.guild is None: return
+        if str(reaction.emoji) in (EMOJI_VICTORY, EMOJI_DEFEAT, EMOJI_INCOMP, EMOJI_JOIN):
+            if str(reaction.emoji) == EMOJI_JOIN:
+                remove_participant(msg.id, user.id)
+            elif str(reaction.emoji) == EMOJI_VICTORY:
+                set_outcome(msg.id, None)
+            elif str(reaction.emoji) == EMOJI_DEFEAT:
+                set_outcome(msg.id, None)
+            elif str(reaction.emoji) == EMOJI_INCOMP:
+                set_incomplete(msg.id, False)
+            emb = await build_ping_embed(msg)
+            await msg.edit(embed=emb)
+            await update_leaderboards(self.bot, msg.guild)
+
+# ---------- Setup ----------
 async def setup(bot: commands.Bot):
-    await bot.add_cog(Roulette(bot))
+    cog = PingCog(bot)
+    await bot.add_cog(cog)
+
+    # Forcer la sync sur le serveur de test uniquement
+    TEST_GUILD_ID = int(os.getenv("TEST_GUILD_ID", "0"))
+    if TEST_GUILD_ID:
+        test_guild = discord.Object(id=TEST_GUILD_ID)
+        bot.tree.copy_global_to(guild=test_guild)
+        await bot.tree.sync(guild=test_guild)
