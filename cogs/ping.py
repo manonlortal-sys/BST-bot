@@ -547,8 +547,12 @@ class PingCog(commands.Cog):
 async def setup(bot: commands.Bot):
     cog = PingCog(bot)
     await bot.add_cog(cog)
+
+    # On ne fait plus bot.tree.add_command pour les commandes du Cog,
+    # elles sont automatiquement ajoutées par app_commands lors du add_cog
     TEST_GUILD_ID = 1280234399610179634
     test_guild = discord.Object(id=TEST_GUILD_ID)
-    bot.tree.add_command(cog.pingpanel, guild=test_guild)
-    bot.tree.add_command(cog.stats, guild=test_guild)
+
+    # On synchronise juste le tree pour la guild de test
     await bot.tree.sync(guild=test_guild)
+
