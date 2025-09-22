@@ -5,6 +5,8 @@ import sqlite3
 import asyncio
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple, List, Dict
+from zoneinfo import ZoneInfo
+
 
 import discord
 from discord import app_commands
@@ -184,19 +186,29 @@ def top_pingeurs(con: sqlite3.Connection, guild_id: int, limit: int = 20) -> Lis
     return [(row["creator_id"], row["cnt"]) for row in cur.fetchall()]
 
 @with_db
-def hourly_split_7d(con: sqlite3.Connection, guild_id: int) -> List[int]:
-    since = utcnow_i() - 7*24*3600
+def hourly_split_7d(con: sqlite3.Connection, guild_id: int) -> list[int]:
+    """Retourne le nombre de défenses par tranche horaire (Matin, Journée, Soir, Nuit) sur les 7 derniers jours."""
+    since = utcnow_i() - 7 * 24 * 3600  # 7 jours en secondes
     cur = con.cursor()
     cur.execute("SELECT created_ts FROM messages WHERE guild_id=? AND created_ts>=?", (guild_id, since))
     rows = cur.fetchall()
-    counts = [0,0,0,0]
+
+    counts = [0, 0, 0, 0]  # Matin, Journée, Soir, Nuit
+
     for r in rows:
-        h = datetime.fromtimestamp(r["created_ts"], tz=timezone.utc).hour
-        h_local = (h + 1) % 24
-        if 6 <= h_local < 10: counts[0]+=1
-        elif 10 <= h_local < 18: counts[1]+=1
-        elif 18 <= h_local < 24: counts[2]+=1
-        else: counts[3]+=1
+        ts = r["created_ts"]
+        dt_paris = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(ZoneInfo("Europe/Paris"))
+        h_local = dt_paris.hour
+
+        if 6 <= h_local < 10:
+            counts[0] += 1
+        elif 10 <= h_local < 18:
+            counts[1] += 1
+        elif 18 <= h_local < 24:
+            counts[2] += 1
+        else:  # 0h-6h
+            counts[3] += 1
+
     return counts
 
 # ---------- Embed constructeur ----------
@@ -310,10 +322,15 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
     if channel is None:
         return
 
-    # Leaderboard Défense
+    # ---------- Leaderboard Défense ----------
     def_post = get_leaderboard_post(guild.id, "defense")
     if def_post:
-        msg_def = await channel.fetch_message(def_post[1])
+        try:
+            msg_def = await channel.fetch_message(def_post[1])
+        except discord.NotFound:
+            # Message supprimé : recréer
+            msg_def = await channel.send("📊 **Leaderboard Défense**")
+            set_leaderboard_post(guild.id, channel.id, msg_def.id, "defense")
     else:
         msg_def = await channel.send("📊 **Leaderboard Défense**")
         set_leaderboard_post(guild.id, channel.id, msg_def.id, "defense")
@@ -334,15 +351,19 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
     )
     embed_def.add_field(
         name="Tranches horaires (7j)",
-        value=f"🌅 Matin : {hourly[0]}\n🌞 Journée : {hourly[1]}\n🌙 Soir : {hourly[2]}\n🌌 Nuit : {hourly[3]}",
+        value=f"🌅 Matin 6h-10h : {hourly[0]}\n🌞 Journée 10h-18h : {hourly[1]}\n🌙 Soir 18h-00h : {hourly[2]}\n🌌 Nuit 00h-06h : {hourly[3]}",
         inline=False
     )
     await msg_def.edit(embed=embed_def)
 
-    # Leaderboard Pingeurs
+    # ---------- Leaderboard Pingeurs ----------
     ping_post = get_leaderboard_post(guild.id, "pingeur")
     if ping_post:
-        msg_ping = await channel.fetch_message(ping_post[1])
+        try:
+            msg_ping = await channel.fetch_message(ping_post[1])
+        except discord.NotFound:
+            msg_ping = await channel.send("📊 **Leaderboard Pingeurs**")
+            set_leaderboard_post(guild.id, channel.id, msg_ping.id, "pingeur")
     else:
         msg_ping = await channel.send("📊 **Leaderboard Pingeurs**")
         set_leaderboard_post(guild.id, channel.id, msg_ping.id, "pingeur")
@@ -352,6 +373,7 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
     embed_ping = discord.Embed(title="📊 Leaderboard Pingeurs", color=discord.Color.gold())
     embed_ping.add_field(name="Top Pingeurs", value=ping_block, inline=False)
     await msg_ping.edit(embed=embed_ping)
+
 
 # ---------- Cog principal ----------
 class PingCog(commands.Cog):
