@@ -420,13 +420,3 @@ async def setup(bot: commands.Bot):
     # Ajouter la commande au tree du serveur
     bot.tree.add_command(cog.pingpanel, guild=test_guild)
     await bot.tree.sync(guild=test_guild)
-
-async def setup(bot: commands.Bot):
-    cog = PingCog(bot)
-    await bot.add_cog(cog)
-
-    # Synchronisation des commandes slash sur le serveur de test uniquement
-    TEST_GUILD_ID = 1280234399610179634
-    test_guild = discord.Object(id=TEST_GUILD_ID)
-    bot.tree.copy_global_to(guild=test_guild)
-    await bot.tree.sync(guild=test_guild)
