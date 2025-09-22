@@ -251,11 +251,11 @@ class PingButtonsView(discord.ui.View):
         super().__init__(timeout=None)
         self.bot = bot
 
-    @discord.ui.button(label="Guilde 1 (Def)", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Guilde 1", style=discord.ButtonStyle.primary, emoji=PartialEmoji(name="Wanted", id=123456789012345678))
     async def btn_def(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle_click(interaction, side="Def")
 
-    @discord.ui.button(label="Guilde 2 (Def2)", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Guilde 2", style=discord.ButtonStyle.danger, emoji=PartialEmoji(name="Wanted", id=123456789012345678))
     async def btn_def2(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle_click(interaction, side="Def2")
 
