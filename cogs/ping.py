@@ -400,88 +400,23 @@ class PingCog(commands.Cog):
             await interaction.response.send_message("Erreur : pas de guild.", ephemeral=True)
             return
     
-        # ---------- Récupérer les défenses du joueur ----------
-        @with_db
-        def get_user_defenses(con, guild_id: int, user_id: int) -> List[sqlite3.Row]:
-            cur = con.cursor()
-            cur.execute("""
-                SELECT m.message_id, m.channel_id, m.created_ts, m.outcome,
-                       GROUP_CONCAT(p2.user_id) AS other_participants
-                FROM messages m
-                JOIN participants p ON p.message_id=m.message_id
-                LEFT JOIN participants p2 ON p2.message_id=m.message_id AND p2.user_id != ?
-                WHERE m.guild_id=? AND p.user_id=?
-                GROUP BY m.message_id
-                ORDER BY m.created_ts DESC
-                LIMIT 3
-            """, (user_id, guild_id, user_id))
-            return cur.fetchall()
-    
-        defenses = get_user_defenses(guild.id, user_id)
+        # Récupérer les 3 dernières défenses
+        defenses = get_player_defenses(guild.id, user_id, limit=3)
         if not defenses:
             await interaction.response.send_message("Vous n'avez aucune défense enregistrée.", ephemeral=True)
             return
     
-        # ---------- Stats globales ----------
-        @with_db
-        def get_totals(con, guild_id: int, user_id: int) -> Tuple[int,int,int]:
-            cur = con.cursor()
-            cur.execute("""
-                SELECT 
-                    SUM(CASE WHEN outcome='win' THEN 1 ELSE 0 END) AS wins,
-                    SUM(CASE WHEN outcome='loss' THEN 1 ELSE 0 END) AS losses,
-                    COUNT(*) AS total
-                FROM messages m
-                JOIN participants p ON p.message_id=m.message_id
-                WHERE m.guild_id=? AND p.user_id=?
-            """, (guild_id, user_id))
-            row = cur.fetchone()
-            return (row["total"] or 0, row["wins"] or 0, row["losses"] or 0)
+        # Statistiques générales
+        totals = get_player_totals(guild.id, user_id)
+        total_def, total_wins, total_losses = totals["total"], totals["wins"], totals["losses"]
     
-        total_def, total_wins, total_losses = get_totals(guild.id, user_id)
-    
-        # ---------- Meilleur partenaire ----------
-        @with_db
-        def best_partner(con, guild_id: int, user_id: int) -> Optional[int]:
-            cur = con.cursor()
-            cur.execute("""
-                SELECT p2.user_id, COUNT(*) AS cnt
-                FROM participants p1
-                JOIN participants p2 ON p2.message_id = p1.message_id AND p2.user_id != p1.user_id
-                JOIN messages m ON m.message_id = p1.message_id
-                WHERE m.guild_id=? AND p1.user_id=?
-                GROUP BY p2.user_id
-                ORDER BY cnt DESC
-                LIMIT 1
-            """, (guild_id, user_id))
-            row = cur.fetchone()
-            return row["user_id"] if row else None
-    
-        partner_id = best_partner(guild.id, user_id)
+        # Meilleur partenaire
+        partner_id = get_favorite_partner(guild.id, user_id)
         partner_text = f"<@{partner_id}>" if partner_id else "Personne"
     
-        # ---------- Tranche horaire la plus active ----------
-        @with_db
-        def get_hourly_activity(con, guild_id: int, user_id: int) -> int:
-            cur = con.cursor()
-            cur.execute("SELECT created_ts FROM messages m JOIN participants p ON p.message_id=m.message_id WHERE m.guild_id=? AND p.user_id=?", (guild_id, user_id))
-            rows = cur.fetchall()
-            counts = [0, 0, 0, 0]  # Matin, Journée, Soir, Nuit
-            for r in rows:
-                ts = r["created_ts"]
-                dt_paris = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(ZoneInfo("Europe/Paris"))
-                h = dt_paris.hour
-                if 6 <= h < 10:
-                    counts[0] += 1
-                elif 10 <= h < 18:
-                    counts[1] += 1
-                elif 18 <= h < 24:
-                    counts[2] += 1
-                else:
-                    counts[3] += 1
-            return counts.index(max(counts)) if rows else 1  # par défaut Journée
-    
-        top_bucket = get_hourly_activity(guild.id, user_id)
+        # Tranche horaire la plus active
+        hourly_counts = hourly_split_7d(guild.id)
+        top_bucket = hourly_counts.index(max(hourly_counts)) if sum(hourly_counts) > 0 else 1
         bucket_messages = [
             "🌅 Matin: Mini défend les percepteurs avant son café, prenez exemple les gueux !",
             "🌞 Journée: Chômage, télétravail, flemme au bureau, Mini gère vos percos !",
@@ -490,26 +425,40 @@ class PingCog(commands.Cog):
         ]
         bucket_text = bucket_messages[top_bucket]
     
-        # ---------- Défenses récentes ----------
+        # Construire le texte des 3 dernières défenses avec emojis
         recent_blocks = []
         for d in defenses:
             date_str = datetime.fromtimestamp(d["created_ts"], tz=timezone.utc).astimezone(ZoneInfo("Europe/Paris")).strftime("%d/%m/%Y %H:%M")
-            outcome = d["outcome"] or "⏳ En cours"
-            other_users = ", ".join([f"<@{int(uid)}>" for uid in d["other_participants"].split(",") if uid]) if d["other_participants"] else "_Aucun autre défenseur_"
-            recent_blocks.append(f"• {outcome} le {date_str} avec {other_users}")
+            outcome = d["outcome"]
+            if outcome == "win":
+                emoji = "🟢"
+                outcome_text = "Victoire"
+            elif outcome == "loss":
+                emoji = "🔴"
+                outcome_text = "Défaite"
+            else:
+                emoji = "⏳"
+                outcome_text = "En cours"
+    
+            other_users = ", ".join([f"<@{int(uid)}>" for uid in d["participants"].split(",") if uid]) if d["participants"] else "_Aucun autre défenseur_"
+            recent_blocks.append(f"• {emoji} {outcome_text} le {date_str} avec {other_users}")
     
         recent_text = "\n".join(recent_blocks)
     
-        # ---------- Construction de l'embed ----------
+        # Construction de l'embed
         embed = discord.Embed(
             title=f"📊 Stats de défense de {interaction.user.display_name}",
             color=discord.Color.orange()
         )
         embed.add_field(name="Stats générales", value=f"Total défenses : {total_def}\n🏆 Victoires : {total_wins}\n❌ Défaites : {total_losses}", inline=False)
         embed.add_field(name="3 dernières défenses", value=recent_text, inline=False)
-        embed.add_field(name="Infos qui servent à rien 😉", value=f"{bucket_text}\nMini toujours en défense avec {partner_text}, prenez une chambre !", inline=False)
+        embed.add_field(name="Infos qui servent à rien 😉",
+                        value=f"{bucket_text}\n\n🛡️ Collègue de défenses\nMini toujours en défense avec {partner_text}, prenez une chambre !",
+                        inline=False)
     
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        # Message public pour tout le monde
+        await interaction.response.send_message(embed=embed, ephemeral=False)
+
 
 
     @commands.Cog.listener()
