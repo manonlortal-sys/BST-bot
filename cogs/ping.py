@@ -94,6 +94,15 @@ def upsert_message(con: sqlite3.Connection, message: discord.Message, creator_id
           int(message.created_at.replace(tzinfo=timezone.utc).timestamp()), utcnow_i(), creator_id))
 
 @with_db
+def get_message_creator(con: sqlite3.Connection, message_id: int) -> Optional[int]:
+    cur = con.cursor()
+    cur.execute("SELECT creator_id FROM messages WHERE message_id=?", (message_id,))
+    row = cur.fetchone()
+    if row:
+        return row["creator_id"]
+    return None
+
+@with_db
 def set_outcome(con: sqlite3.Connection, message_id: int, outcome: Optional[str]):
     cur = con.cursor()
     cur.execute("UPDATE messages SET outcome=?, last_ts=? WHERE message_id=?", (outcome, utcnow_i(), message_id))
@@ -183,7 +192,7 @@ def hourly_split_7d(con: sqlite3.Connection, guild_id: int) -> List[int]:
     counts = [0,0,0,0]
     for r in rows:
         h = datetime.fromtimestamp(r["created_ts"], tz=timezone.utc).hour
-        h_local = (h + 1) % 24  # UTC → local
+        h_local = (h + 1) % 24
         if 6 <= h_local < 10: counts[0]+=1
         elif 10 <= h_local < 18: counts[1]+=1
         elif 18 <= h_local < 24: counts[2]+=1
@@ -191,7 +200,10 @@ def hourly_split_7d(con: sqlite3.Connection, guild_id: int) -> List[int]:
     return counts
 
 # ---------- Embed constructeur ----------
-async def build_ping_embed(msg: discord.Message, creator: Optional[discord.Member] = None) -> discord.Embed:
+async def build_ping_embed(msg: discord.Message) -> discord.Embed:
+    creator_id = get_message_creator(msg.id)
+    creator_member = msg.guild.get_member(creator_id) if creator_id else None
+
     reactions = {str(r.emoji): r for r in msg.reactions}
     win  = (EMOJI_VICTORY in reactions and reactions[EMOJI_VICTORY].count > 0)
     loss = (EMOJI_DEFEAT in reactions and reactions[EMOJI_DEFEAT].count > 0)
@@ -213,10 +225,9 @@ async def build_ping_embed(msg: discord.Message, creator: Optional[discord.Membe
                 defenders_ids.append(u.id)
                 add_participant(msg.id, u.id)
 
-    guild = msg.guild
     names: List[str] = []
     for uid in defenders_ids[:20]:
-        m = guild.get_member(uid) if guild else None
+        m = msg.guild.get_member(uid)
         names.append(m.display_name if m else f"<@{uid}>")
     defenders_block = "• " + "\n• ".join(names) if names else "_Aucun défenseur pour le moment._"
 
@@ -228,8 +239,8 @@ async def build_ping_embed(msg: discord.Message, creator: Optional[discord.Membe
     embed.add_field(name="État du combat", value=etat, inline=False)
     embed.add_field(name="Défenseurs (👍)", value=defenders_block, inline=False)
 
-    if creator:
-        embed.add_field(name="⚡ Déclenché par", value=creator.display_name, inline=False)
+    if creator_member:
+        embed.add_field(name="⚡ Déclenché par", value=creator_member.display_name, inline=False)
 
     embed.set_footer(text="Ajoutez vos réactions : 🏆 gagné • ❌ perdu • 😡 incomplète • 👍 j'ai participé")
     return embed
@@ -250,8 +261,7 @@ class PingButtonsView(discord.ui.View):
 
     @discord.ui.button(label="TEST (Admin)", style=discord.ButtonStyle.secondary)
     async def btn_test(self, interaction: discord.Interaction, button: discord.ui.Button):
-        admin_roles = [r for r in interaction.user.roles if r.permissions.administrator]
-        if not admin_roles:
+        if not any(r.permissions.administrator for r in interaction.user.roles):
             await interaction.response.send_message("Bouton réservé aux admins.", ephemeral=True)
             return
         await self._handle_click(interaction, side="Test")
@@ -282,12 +292,11 @@ class PingButtonsView(discord.ui.View):
         content = f"{role_mention} — **Percepteur attaqué !** Merci de vous connecter." if role_mention else "**Percepteur attaqué !** Merci de vous connecter."
 
         msg = await alert_channel.send(content)
-        emb = await build_ping_embed(msg, creator=interaction.user)
+        upsert_message(msg, creator_id=interaction.user.id)
+        emb = await build_ping_embed(msg)
         await msg.edit(embed=emb)
 
-        upsert_message(msg, creator_id=interaction.user.id)
-
-        # Met à jour les leaderboards si c’est le premier message
+        # Met à jour les leaderboards automatiquement
         await update_leaderboards(self.bot, guild)
 
         try:
@@ -297,20 +306,18 @@ class PingButtonsView(discord.ui.View):
 
 # ---------- Leaderboards ----------
 async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
-    # Défense
-    def_post = get_leaderboard_post(guild.id, "defense")
     channel = bot.get_channel(LEADERBOARD_CHANNEL_ID)
     if channel is None:
         return
 
-    # Création ou récupération
+    # Leaderboard Défense
+    def_post = get_leaderboard_post(guild.id, "defense")
     if def_post:
         msg_def = await channel.fetch_message(def_post[1])
     else:
         msg_def = await channel.send("📊 **Leaderboard Défense**")
         set_leaderboard_post(guild.id, channel.id, msg_def.id, "defense")
 
-    # Stats
     total_w, total_l, total_inc, total_att = agg_totals_all(guild.id)
     top_def = top_defenders(guild.id)
     hourly = hourly_split_7d(guild.id)
@@ -320,11 +327,19 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
 
     embed_def = discord.Embed(title="📊 Leaderboard Défense", color=discord.Color.blue())
     embed_def.add_field(name="Top défenseurs", value=top_block, inline=False)
-    embed_def.add_field(name="Stats globales", value=f"Attaques : {total_att}\nVictoire : {total_w}\nDéfaites : {total_l}\nIncomplet : {total_inc}\nRatio victoire : {ratio}", inline=False)
-    embed_def.add_field(name="Tranches horaires (7j)", value=f"🌅 Matin : {hourly[0]}\n🌞 Journée : {hourly[1]}\n🌙 Soir : {hourly[2]}\n🌌 Nuit : {hourly[3]}", inline=False)
+    embed_def.add_field(
+        name="Stats globales",
+        value=f"Attaques : {total_att}\nVictoire : {total_w}\nDéfaites : {total_l}\nIncomplet : {total_inc}\nRatio victoire : {ratio}",
+        inline=False
+    )
+    embed_def.add_field(
+        name="Tranches horaires (7j)",
+        value=f"🌅 Matin : {hourly[0]}\n🌞 Journée : {hourly[1]}\n🌙 Soir : {hourly[2]}\n🌌 Nuit : {hourly[3]}",
+        inline=False
+    )
     await msg_def.edit(embed=embed_def)
 
-    # Pingeur
+    # Leaderboard Pingeurs
     ping_post = get_leaderboard_post(guild.id, "pingeur")
     if ping_post:
         msg_ping = await channel.fetch_message(ping_post[1])
@@ -343,7 +358,6 @@ class PingCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         create_db()
-        self._pending_update: Dict[Tuple[int,str], asyncio.Task] = {}
 
     @app_commands.command(name="pingpanel", description="Publier le panneau de ping des percepteurs (défenses)")
     async def pingpanel(self, interaction: discord.Interaction):
@@ -357,13 +371,10 @@ class PingCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_reaction_add(self, reaction: discord.Reaction, user: discord.User):
-        if user.bot:
-            return
+        if user.bot: return
         msg = reaction.message
-        if msg.guild is None:
-            return
+        if msg.guild is None: return
         if str(reaction.emoji) in (EMOJI_VICTORY, EMOJI_DEFEAT, EMOJI_INCOMP, EMOJI_JOIN):
-            # Mise à jour DB
             if str(reaction.emoji) == EMOJI_JOIN:
                 add_participant(msg.id, user.id)
             elif str(reaction.emoji) == EMOJI_VICTORY:
@@ -372,15 +383,15 @@ class PingCog(commands.Cog):
                 set_outcome(msg.id, "loss")
             elif str(reaction.emoji) == EMOJI_INCOMP:
                 set_incomplete(msg.id, True)
+            emb = await build_ping_embed(msg)
+            await msg.edit(embed=emb)
             await update_leaderboards(self.bot, msg.guild)
 
     @commands.Cog.listener()
     async def on_reaction_remove(self, reaction: discord.Reaction, user: discord.User):
-        if user.bot:
-            return
+        if user.bot: return
         msg = reaction.message
-        if msg.guild is None:
-            return
+        if msg.guild is None: return
         if str(reaction.emoji) in (EMOJI_VICTORY, EMOJI_DEFEAT, EMOJI_INCOMP, EMOJI_JOIN):
             if str(reaction.emoji) == EMOJI_JOIN:
                 remove_participant(msg.id, user.id)
@@ -390,6 +401,8 @@ class PingCog(commands.Cog):
                 set_outcome(msg.id, None)
             elif str(reaction.emoji) == EMOJI_INCOMP:
                 set_incomplete(msg.id, False)
+            emb = await build_ping_embed(msg)
+            await msg.edit(embed=emb)
             await update_leaderboards(self.bot, msg.guild)
 
     async def cog_load(self):
