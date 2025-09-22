@@ -219,7 +219,9 @@ async def build_ping_embed(msg: discord.Message) -> discord.Embed:
     reactions = {str(r.emoji): r for r in msg.reactions}
     win  = (EMOJI_VICTORY in reactions and reactions[EMOJI_VICTORY].count > 0)
     loss = (EMOJI_DEFEAT in reactions and reactions[EMOJI_DEFEAT].count > 0)
+    incomplete = (EMOJI_INCOMP in reactions and reactions[EMOJI_INCOMP].count > 0)
 
+    # Couleur et état principal
     if win and not loss:
         color = discord.Color.green()
         etat = f"{EMOJI_VICTORY} **Défense gagnée**"
@@ -230,14 +232,18 @@ async def build_ping_embed(msg: discord.Message) -> discord.Embed:
         color = discord.Color.orange()
         etat = "⏳ **En cours / à confirmer**"
 
-    defenders_ids: List[int] = []
+    # Ajout de l'info "Défense incomplète" si applicable
+    if incomplete:
+        etat += f"\n⚠️ **Défense incomplète**"
+
+    defenders_ids: list[int] = []
     if EMOJI_JOIN in reactions:
         async for u in reactions[EMOJI_JOIN].users():
             if not u.bot:
                 defenders_ids.append(u.id)
                 add_participant(msg.id, u.id)
 
-    names: List[str] = []
+    names: list[str] = []
     for uid in defenders_ids[:20]:
         m = msg.guild.get_member(uid)
         names.append(m.display_name if m else f"<@{uid}>")
@@ -256,6 +262,7 @@ async def build_ping_embed(msg: discord.Message) -> discord.Embed:
 
     embed.set_footer(text="Ajoutez vos réactions : 🏆 gagné • ❌ perdu • 😡 incomplète • 👍 j'ai participé")
     return embed
+
 
 # ---------- View boutons ----------
 class PingButtonsView(discord.ui.View):
