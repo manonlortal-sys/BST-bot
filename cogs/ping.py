@@ -435,7 +435,7 @@ class PingCog(commands.Cog):
         embed.add_field(name="Pings faits", value=f"{pings} 📣")
         embed.add_field(name="Victoires", value=f"{wins} 🏆")
         embed.add_field(name="Défaites", value=f"{losses} ❌")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed, ephemeral=False)
 
     # ---------- Nouveaux resets ----------
     @app_commands.command(name="reset_defense", description="Archiver et réinitialiser le leaderboard Défense")
