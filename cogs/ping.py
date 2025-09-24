@@ -51,8 +51,7 @@ def create_db():
             outcome    TEXT,
             incomplete INTEGER,
             last_ts    INTEGER NOT NULL,
-            creator_id INTEGER,
-            type       TEXT NOT NULL  -- 'defense' ou 'pingeur'
+            creator_id INTEGER
         )
     """)
     cur.execute("""
@@ -88,14 +87,14 @@ def with_db(func):
 
 # ---------- DB functions ----------
 @with_db
-def upsert_message(con: sqlite3.Connection, message: discord.Message, creator_id: Optional[int] = None, type_: str = "defense"):
+def upsert_message(con: sqlite3.Connection, message: discord.Message, creator_id: Optional[int] = None):
     cur = con.cursor()
     cur.execute("""
-        INSERT INTO messages(message_id, guild_id, channel_id, created_ts, outcome, incomplete, last_ts, creator_id, type)
-        VALUES (?,?,?,?,NULL,0,?, ?, ?)
+        INSERT INTO messages(message_id, guild_id, channel_id, created_ts, outcome, incomplete, last_ts, creator_id)
+        VALUES (?,?,?,?,NULL,0,?,?)
         ON CONFLICT(message_id) DO NOTHING
     """, (message.id, message.guild.id, message.channel.id,
-          int(message.created_at.replace(tzinfo=timezone.utc).timestamp()), utcnow_i(), creator_id, type_))
+          int(message.created_at.replace(tzinfo=timezone.utc).timestamp()), utcnow_i(), creator_id))
 
 @with_db
 def get_message_creator(con: sqlite3.Connection, message_id: int) -> Optional[int]:
@@ -204,12 +203,42 @@ def hourly_split_7d(con: sqlite3.Connection, guild_id: int) -> list[int]:
         else: counts[3] += 1
     return counts
 
-# ---------- Reset leaderboard fonctionnel ----------
+# ---------- DB function pour stats par joueur ----------
 @with_db
-def reset_leaderboard_type(con: sqlite3.Connection, guild_id: int, type_: str):
+def get_player_stats(con: sqlite3.Connection, guild_id: int, user_id: int) -> Tuple[int,int,int,int]:
     cur = con.cursor()
-    cur.execute("DELETE FROM participants WHERE message_id IN (SELECT message_id FROM messages WHERE guild_id=? AND type=?)", (guild_id, type_))
-    cur.execute("DELETE FROM messages WHERE guild_id=? AND type=?", (guild_id, type_))
+    # Défenses prises : a participé
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM participants p
+        JOIN messages m ON m.message_id=p.message_id
+        WHERE m.guild_id=? AND p.user_id=?
+    """, (guild_id, user_id))
+    defenses = cur.fetchone()[0] or 0
+
+    # Pings faits : a créé le message
+    cur.execute("SELECT COUNT(*) FROM messages WHERE guild_id=? AND creator_id=?", (guild_id, user_id))
+    pings = cur.fetchone()[0] or 0
+
+    # Victoires : a participé à des messages gagnés
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM participants p
+        JOIN messages m ON m.message_id=p.message_id
+        WHERE m.guild_id=? AND p.user_id=? AND m.outcome='win'
+    """, (guild_id, user_id))
+    wins = cur.fetchone()[0] or 0
+
+    # Défaites : a participé à des messages perdus
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM participants p
+        JOIN messages m ON m.message_id=p.message_id
+        WHERE m.guild_id=? AND p.user_id=? AND m.outcome='loss'
+    """, (guild_id, user_id))
+    losses = cur.fetchone()[0] or 0
+
+    return defenses, pings, wins, losses
 
 # ---------- Embed constructeur ----------
 async def build_ping_embed(msg: discord.Message) -> discord.Embed:
@@ -299,7 +328,7 @@ class PingButtonsView(discord.ui.View):
         content = f"{role_mention} — **Percepteur attaqué !** Merci de vous connecter." if role_mention else "**Percepteur attaqué !** Merci de vous connecter."
 
         msg = await alert_channel.send(content)
-        upsert_message(msg, creator_id=interaction.user.id, type_="defense")  # type ajouté ici
+        upsert_message(msg, creator_id=interaction.user.id)
         emb = await build_ping_embed(msg)
         await msg.edit(embed=emb)
         await update_leaderboards(self.bot, guild)
@@ -412,31 +441,30 @@ class PingCog(commands.Cog):
             except discord.NotFound:
                 pass
 
-        # Reset DB
-        reset_leaderboard_type(interaction.guild.id, type_)
-
-        # Nouveau message embed avec stats à 0
-        if type_ == "defense":
-            embed = discord.Embed(title=title, color=discord.Color.blue())
-            embed.add_field(name="Top défenseurs", value="_Aucun défenseur encore_", inline=False)
-            embed.add_field(
-                name="Stats globales",
-                value=f"Attaques : 0\nVictoire : 0\nDéfaites : 0\nIncomplet : 0\nRatio victoire : 0%",
-                inline=False
-            )
-            embed.add_field(
-                name="Tranches horaires (7j)",
-                value=f"🌅 Matin 6h-10h : 0\n🌞 Journée 10h-18h : 0\n🌙 Soir 18h-00h : 0\n🌌 Nuit 00h-06h : 0",
-                inline=False
-            )
-        else:  # pingeur
-            embed = discord.Embed(title=title, color=discord.Color.gold())
-            embed.add_field(name="Top Pingeurs", value="_Aucun pingeur encore_", inline=False)
-
-        new_msg = await channel.send(embed=embed)
+        new_msg = await channel.send(f"{title}\n*(mis à jour le {datetime.now().strftime('%Y-%m-%d %H:%M:%S')})*")
         set_leaderboard_post(interaction.guild.id, channel.id, new_msg.id, type_)
 
         await interaction.response.send_message(f"{title} réinitialisé et archivé.", ephemeral=True)
+
+    # ---------- Commande /stats ----------
+    @app_commands.command(name="stats", description="Afficher les statistiques d'un joueur")
+    @app_commands.describe(player="Mention du joueur (optionnel)")
+    async def stats(self, interaction: discord.Interaction, player: Optional[discord.Member] = None):
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("Erreur : impossible de récupérer le serveur.", ephemeral=True)
+            return
+
+        target = player or interaction.user
+        defenses, pings, wins, losses = get_player_stats(guild.id, target.id)
+
+        embed = discord.Embed(title=f"📊 Stats de {target.display_name}", color=discord.Color.purple())
+        embed.add_field(name="🛡️ Défenses prises", value=str(defenses), inline=False)
+        embed.add_field(name="⚡ Pings faits", value=str(pings), inline=False)
+        embed.add_field(name="🏆 Victoires", value=str(wins), inline=True)
+        embed.add_field(name="❌ Défaites", value=str(losses), inline=True)
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # ---------- Listeners ----------
     @commands.Cog.listener()
@@ -489,4 +517,5 @@ async def setup(bot: commands.Bot):
     bot.tree.add_command(cog.pingpanel, guild=test_guild)
     bot.tree.add_command(cog.reset_defense, guild=test_guild)
     bot.tree.add_command(cog.reset_pingeur, guild=test_guild)
+    bot.tree.add_command(cog.stats, guild=test_guild)
     await bot.tree.sync(guild=test_guild)
