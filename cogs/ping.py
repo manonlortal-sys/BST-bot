@@ -70,6 +70,13 @@ def create_db():
             PRIMARY KEY (guild_id, type)
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS panel_messages(
+            guild_id INTEGER PRIMARY KEY,
+            channel_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL
+        )
+    """)
     con.commit()
     con.close()
 
@@ -146,6 +153,23 @@ def set_leaderboard_post(con: sqlite3.Connection, guild_id: int, channel_id: int
     """, (guild_id, channel_id, message_id, type_))
 
 @with_db
+def set_panel_message(con, guild_id: int, channel_id: int, message_id: int):
+    cur = con.cursor()
+    cur.execute("""
+        INSERT INTO panel_messages(guild_id, channel_id, message_id)
+        VALUES (?,?,?)
+        ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id, message_id=excluded.message_id
+    """, (guild_id, channel_id, message_id))
+
+@with_db
+def get_panel_message(con, guild_id: int) -> Optional[Tuple[int,int]]:
+    cur = con.cursor()
+    cur.execute("SELECT channel_id, message_id FROM panel_messages WHERE guild_id=?", (guild_id,))
+    row = cur.fetchone()
+    if row: return (row["channel_id"], row["message_id"])
+    return None
+
+@with_db
 def agg_totals_all(con: sqlite3.Connection, guild_id: int) -> Tuple[int,int,int,int]:
     cur = con.cursor()
     cur.execute("""
@@ -203,41 +227,30 @@ def hourly_split_7d(con: sqlite3.Connection, guild_id: int) -> list[int]:
         else: counts[3] += 1
     return counts
 
-# ---------- DB function pour stats par joueur ----------
 @with_db
-def get_player_stats(con: sqlite3.Connection, guild_id: int, user_id: int) -> Tuple[int,int,int,int]:
+def get_player_stats(con, guild_id: int, user_id: int) -> Tuple[int,int,int,int]:
+    # Défenses prises
     cur = con.cursor()
-    # Défenses prises : a participé
     cur.execute("""
-        SELECT COUNT(*)
-        FROM participants p
+        SELECT COUNT(*) FROM participants p
         JOIN messages m ON m.message_id=p.message_id
         WHERE m.guild_id=? AND p.user_id=?
     """, (guild_id, user_id))
     defenses = cur.fetchone()[0] or 0
-
-    # Pings faits : a créé le message
+    # Pings faits
     cur.execute("SELECT COUNT(*) FROM messages WHERE guild_id=? AND creator_id=?", (guild_id, user_id))
     pings = cur.fetchone()[0] or 0
-
-    # Victoires : a participé à des messages gagnés
+    # Victoires et défaites sur ses défenses
     cur.execute("""
-        SELECT COUNT(*)
-        FROM participants p
-        JOIN messages m ON m.message_id=p.message_id
-        WHERE m.guild_id=? AND p.user_id=? AND m.outcome='win'
+        SELECT SUM(CASE WHEN m.outcome='win' THEN 1 ELSE 0 END),
+               SUM(CASE WHEN m.outcome='loss' THEN 1 ELSE 0 END)
+        FROM messages m
+        JOIN participants p ON m.message_id=p.message_id
+        WHERE m.guild_id=? AND p.user_id=?
     """, (guild_id, user_id))
-    wins = cur.fetchone()[0] or 0
-
-    # Défaites : a participé à des messages perdus
-    cur.execute("""
-        SELECT COUNT(*)
-        FROM participants p
-        JOIN messages m ON m.message_id=p.message_id
-        WHERE m.guild_id=? AND p.user_id=? AND m.outcome='loss'
-    """, (guild_id, user_id))
-    losses = cur.fetchone()[0] or 0
-
+    row = cur.fetchone()
+    wins = row[0] or 0
+    losses = row[1] or 0
     return defenses, pings, wins, losses
 
 # ---------- Embed constructeur ----------
@@ -408,7 +421,21 @@ class PingCog(commands.Cog):
             description="Cliquez sur les boutons ci-dessous pour déclencher une alerte.",
             color=discord.Color.blue()
         )
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
+        msg = await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
+        set_panel_message(interaction.guild.id, msg.channel.id, msg.id)
+
+    @app_commands.command(name="stats", description="Voir les stats d’un joueur")
+    async def stats(self, interaction: discord.Interaction, member: discord.Member):
+        defenses, pings, wins, losses = get_player_stats(interaction.guild.id, member.id)
+        embed = discord.Embed(
+            title=f"📊 Stats de {member.display_name}",
+            color=discord.Color.purple()
+        )
+        embed.add_field(name="Défenses prises", value=f"{defenses} 🛡️")
+        embed.add_field(name="Pings faits", value=f"{pings} 📣")
+        embed.add_field(name="Victoires", value=f"{wins} 🏆")
+        embed.add_field(name="Défaites", value=f"{losses} ❌")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # ---------- Nouveaux resets ----------
     @app_commands.command(name="reset_defense", description="Archiver et réinitialiser le leaderboard Défense")
@@ -445,26 +472,6 @@ class PingCog(commands.Cog):
         set_leaderboard_post(interaction.guild.id, channel.id, new_msg.id, type_)
 
         await interaction.response.send_message(f"{title} réinitialisé et archivé.", ephemeral=True)
-
-    # ---------- Commande /stats ----------
-    @app_commands.command(name="stats", description="Afficher les statistiques d'un joueur")
-    @app_commands.describe(player="Mention du joueur (optionnel)")
-    async def stats(self, interaction: discord.Interaction, player: Optional[discord.Member] = None):
-        guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message("Erreur : impossible de récupérer le serveur.", ephemeral=True)
-            return
-
-        target = player or interaction.user
-        defenses, pings, wins, losses = get_player_stats(guild.id, target.id)
-
-        embed = discord.Embed(title=f"📊 Stats de {target.display_name}", color=discord.Color.purple())
-        embed.add_field(name="🛡️ Défenses prises", value=str(defenses), inline=False)
-        embed.add_field(name="⚡ Pings faits", value=str(pings), inline=False)
-        embed.add_field(name="🏆 Victoires", value=str(wins), inline=True)
-        embed.add_field(name="❌ Défaites", value=str(losses), inline=True)
-
-        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # ---------- Listeners ----------
     @commands.Cog.listener()
@@ -504,7 +511,18 @@ class PingCog(commands.Cog):
             await update_leaderboards(self.bot, msg.guild)
 
     async def cog_load(self):
+        # Ré-attacher le panel existant pour que les boutons fonctionnent après redéploiement
         print(f"{self.__class__.__name__} chargé")
+        for guild in self.bot.guilds:
+            panel_info = get_panel_message(guild.id)
+            if panel_info:
+                channel = self.bot.get_channel(panel_info[0])
+                if channel:
+                    try:
+                        msg = await channel.fetch_message(panel_info[1])
+                        await msg.edit(view=PingButtonsView(self.bot))
+                    except discord.NotFound:
+                        pass
 
 # ---------- Setup ----------
 async def setup(bot: commands.Bot):
