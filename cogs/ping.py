@@ -51,7 +51,8 @@ def create_db():
             outcome    TEXT,
             incomplete INTEGER,
             last_ts    INTEGER NOT NULL,
-            creator_id INTEGER
+            creator_id INTEGER,
+            type       TEXT NOT NULL  -- 'defense' ou 'pingeur'
         )
     """)
     cur.execute("""
@@ -87,14 +88,14 @@ def with_db(func):
 
 # ---------- DB functions ----------
 @with_db
-def upsert_message(con: sqlite3.Connection, message: discord.Message, creator_id: Optional[int] = None):
+def upsert_message(con: sqlite3.Connection, message: discord.Message, creator_id: Optional[int] = None, type_: str = "defense"):
     cur = con.cursor()
     cur.execute("""
-        INSERT INTO messages(message_id, guild_id, channel_id, created_ts, outcome, incomplete, last_ts, creator_id)
-        VALUES (?,?,?,?,NULL,0,?,?)
+        INSERT INTO messages(message_id, guild_id, channel_id, created_ts, outcome, incomplete, last_ts, creator_id, type)
+        VALUES (?,?,?,?,NULL,0,?, ?, ?)
         ON CONFLICT(message_id) DO NOTHING
     """, (message.id, message.guild.id, message.channel.id,
-          int(message.created_at.replace(tzinfo=timezone.utc).timestamp()), utcnow_i(), creator_id))
+          int(message.created_at.replace(tzinfo=timezone.utc).timestamp()), utcnow_i(), creator_id, type_))
 
 @with_db
 def get_message_creator(con: sqlite3.Connection, message_id: int) -> Optional[int]:
@@ -188,7 +189,6 @@ def top_pingeurs(con: sqlite3.Connection, guild_id: int, limit: int = 20) -> Lis
 
 @with_db
 def hourly_split_7d(con: sqlite3.Connection, guild_id: int) -> list[int]:
-    """Retourne le nombre de défenses par tranche horaire (Matin, Journée, Soir, Nuit) sur les 7 derniers jours."""
     since = utcnow_i() - 7 * 24 * 3600
     cur = con.cursor()
     cur.execute("SELECT created_ts FROM messages WHERE guild_id=? AND created_ts>=?", (guild_id, since))
@@ -203,6 +203,13 @@ def hourly_split_7d(con: sqlite3.Connection, guild_id: int) -> list[int]:
         elif 18 <= h_local < 24: counts[2] += 1
         else: counts[3] += 1
     return counts
+
+# ---------- Reset leaderboard fonctionnel ----------
+@with_db
+def reset_leaderboard_type(con: sqlite3.Connection, guild_id: int, type_: str):
+    cur = con.cursor()
+    cur.execute("DELETE FROM participants WHERE message_id IN (SELECT message_id FROM messages WHERE guild_id=? AND type=?)", (guild_id, type_))
+    cur.execute("DELETE FROM messages WHERE guild_id=? AND type=?", (guild_id, type_))
 
 # ---------- Embed constructeur ----------
 async def build_ping_embed(msg: discord.Message) -> discord.Embed:
@@ -292,7 +299,7 @@ class PingButtonsView(discord.ui.View):
         content = f"{role_mention} — **Percepteur attaqué !** Merci de vous connecter." if role_mention else "**Percepteur attaqué !** Merci de vous connecter."
 
         msg = await alert_channel.send(content)
-        upsert_message(msg, creator_id=interaction.user.id)
+        upsert_message(msg, creator_id=interaction.user.id, type_="defense")  # type ajouté ici
         emb = await build_ping_embed(msg)
         await msg.edit(embed=emb)
         await update_leaderboards(self.bot, guild)
@@ -405,7 +412,28 @@ class PingCog(commands.Cog):
             except discord.NotFound:
                 pass
 
-        new_msg = await channel.send(f"{title}\n*(mis à jour le {datetime.now().strftime('%Y-%m-%d %H:%M:%S')})*")
+        # Reset DB
+        reset_leaderboard_type(interaction.guild.id, type_)
+
+        # Nouveau message embed avec stats à 0
+        if type_ == "defense":
+            embed = discord.Embed(title=title, color=discord.Color.blue())
+            embed.add_field(name="Top défenseurs", value="_Aucun défenseur encore_", inline=False)
+            embed.add_field(
+                name="Stats globales",
+                value=f"Attaques : 0\nVictoire : 0\nDéfaites : 0\nIncomplet : 0\nRatio victoire : 0%",
+                inline=False
+            )
+            embed.add_field(
+                name="Tranches horaires (7j)",
+                value=f"🌅 Matin 6h-10h : 0\n🌞 Journée 10h-18h : 0\n🌙 Soir 18h-00h : 0\n🌌 Nuit 00h-06h : 0",
+                inline=False
+            )
+        else:  # pingeur
+            embed = discord.Embed(title=title, color=discord.Color.gold())
+            embed.add_field(name="Top Pingeurs", value="_Aucun pingeur encore_", inline=False)
+
+        new_msg = await channel.send(embed=embed)
         set_leaderboard_post(interaction.guild.id, channel.id, new_msg.id, type_)
 
         await interaction.response.send_message(f"{title} réinitialisé et archivé.", ephemeral=True)
