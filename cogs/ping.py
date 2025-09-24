@@ -390,5 +390,20 @@ class PingPanel(commands.Cog):
         con.close()
         await interaction.response.send_message(f"Leaderboard {type_} réinitialisé et archivé.", ephemeral=True)
 
+# ---------- Setup ----------
 async def setup(bot: commands.Bot):
-    await bot.add_cog(PingPanel(bot))
+    cog = PingCog(bot)
+    await bot.add_cog(cog)
+
+    # ID du serveur de test
+    TEST_GUILD_ID = 1280234399610179634
+    test_guild = discord.Object(id=TEST_GUILD_ID)
+
+    # Ajouter les commandes au tree pour le serveur de test
+    bot.tree.add_command(cog.pingpanel, guild=test_guild)
+    bot.tree.add_command(cog.reset_defense, guild=test_guild)
+    bot.tree.add_command(cog.reset_pingeur, guild=test_guild)
+
+    # Synchronisation du tree uniquement sur le serveur de test
+    await bot.tree.sync(guild=test_guild)
+
