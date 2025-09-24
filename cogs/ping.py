@@ -7,7 +7,6 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple, List, Dict
 from zoneinfo import ZoneInfo
 
-
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -317,10 +316,20 @@ class PingButtonsView(discord.ui.View):
         msg = await alert_channel.send(content)
         upsert_message(msg, creator_id=interaction.user.id)
         emb = await build_ping_embed(msg)
-        await msg.edit(embed=emb)
+
+        # safe edit: protect against Forbidden or other failures
+        try:
+            await msg.edit(embed=emb)
+        except discord.Forbidden:
+            print("❌ Forbidden editing alert message", msg.id)
+        except Exception as e:
+            print("❌ Error editing alert message:", e)
 
         # Met à jour les leaderboards automatiquement
-        await update_leaderboards(self.bot, guild)
+        try:
+            await update_leaderboards(self.bot, guild)
+        except Exception as e:
+            print("❌ update_leaderboards error:", e)
 
         try:
             await interaction.followup.send("✅ Alerte envoyée.", ephemeral=True)
@@ -365,7 +374,10 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
         value=f"🌅 Matin 6h-10h : {hourly[0]}\n🌞 Journée 10h-18h : {hourly[1]}\n🌙 Soir 18h-00h : {hourly[2]}\n🌌 Nuit 00h-06h : {hourly[3]}",
         inline=False
     )
-    await msg_def.edit(embed=embed_def)
+    try:
+        await msg_def.edit(embed=embed_def)
+    except Exception as e:
+        print("❌ Failed to edit leaderboard def message:", e)
 
     # ---------- Leaderboard Pingeurs ----------
     ping_post = get_leaderboard_post(guild.id, "pingeur")
@@ -383,7 +395,10 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
     ping_block = "\n".join([f"• <@{uid}> : {cnt} pings" for uid, cnt in top_ping]) or "_Aucun pingeur encore_"
     embed_ping = discord.Embed(title="📊 Leaderboard Pingeurs", color=discord.Color.gold())
     embed_ping.add_field(name="Top Pingeurs", value=ping_block, inline=False)
-    await msg_ping.edit(embed=embed_ping)
+    try:
+        await msg_ping.edit(embed=embed_ping)
+    except Exception as e:
+        print("❌ Failed to edit leaderboard ping message:", e)
 
 
 # ---------- Cog principal ----------
@@ -407,6 +422,9 @@ class PingCog(commands.Cog):
         if user.bot: return
         msg = reaction.message
         if msg.guild is None: return
+        # only handle reactions on bot messages (avoid editing other users' messages)
+        if msg.author is None or msg.author.id != self.bot.user.id:
+            return
         if str(reaction.emoji) in (EMOJI_VICTORY, EMOJI_DEFEAT, EMOJI_INCOMP, EMOJI_JOIN):
             if str(reaction.emoji) == EMOJI_JOIN:
                 add_participant(msg.id, user.id)
@@ -417,7 +435,12 @@ class PingCog(commands.Cog):
             elif str(reaction.emoji) == EMOJI_INCOMP:
                 set_incomplete(msg.id, True)
             emb = await build_ping_embed(msg)
-            await msg.edit(embed=emb)
+            try:
+                await msg.edit(embed=emb)
+            except discord.Forbidden:
+                print("❌ Forbidden editing message on reaction add", msg.id)
+            except Exception as e:
+                print("❌ Error editing message on reaction add:", e)
             await update_leaderboards(self.bot, msg.guild)
 
     @commands.Cog.listener()
@@ -425,6 +448,9 @@ class PingCog(commands.Cog):
         if user.bot: return
         msg = reaction.message
         if msg.guild is None: return
+        # only handle reactions on bot messages (avoid editing other users' messages)
+        if msg.author is None or msg.author.id != self.bot.user.id:
+            return
         if str(reaction.emoji) in (EMOJI_VICTORY, EMOJI_DEFEAT, EMOJI_INCOMP, EMOJI_JOIN):
             if str(reaction.emoji) == EMOJI_JOIN:
                 remove_participant(msg.id, user.id)
@@ -435,7 +461,12 @@ class PingCog(commands.Cog):
             elif str(reaction.emoji) == EMOJI_INCOMP:
                 set_incomplete(msg.id, False)
             emb = await build_ping_embed(msg)
-            await msg.edit(embed=emb)
+            try:
+                await msg.edit(embed=emb)
+            except discord.Forbidden:
+                print("❌ Forbidden editing message on reaction remove", msg.id)
+            except Exception as e:
+                print("❌ Error editing message on reaction remove:", e)
             await update_leaderboards(self.bot, msg.guild)
 
     async def cog_load(self):
@@ -450,6 +481,6 @@ async def setup(bot: commands.Bot):
     TEST_GUILD_ID = 1280234399610179634
     test_guild = discord.Object(id=TEST_GUILD_ID)
 
-    # Ajouter la commande au tree du serveur
+    # Ajouter la commande au tree du serveur (tu as demandé de garder cet ajout manuel)
     bot.tree.add_command(cog.pingpanel, guild=test_guild)
     await bot.tree.sync(guild=test_guild)
