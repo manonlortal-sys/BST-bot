@@ -3,8 +3,8 @@ import os
 import time
 import sqlite3
 import asyncio
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Tuple, List, Dict
+from datetime import datetime, timezone
+from typing import Optional, Tuple, List
 from zoneinfo import ZoneInfo
 
 import discord
@@ -14,9 +14,11 @@ from discord.ext import commands
 # ---------- ENV ----------
 ALERT_CHANNEL_ID = int(os.getenv("ALERT_CHANNEL_ID", "0"))
 LEADERBOARD_CHANNEL_ID = int(os.getenv("LEADERBOARD_CHANNEL_ID", "0"))
+ARCHIVE_CHANNEL_ID = int(os.getenv("ARCHIVE_CHANNEL_ID", "0"))
 ROLE_DEF_ID = int(os.getenv("ROLE_DEF_ID", "0"))
 ROLE_DEF2_ID = int(os.getenv("ROLE_DEF2_ID", "0"))
 ROLE_TEST_ID = int(os.getenv("ROLE_TEST_ID", "0"))
+ADMIN_ROLE_ID = 1280396795046006836  # Rôle Admin fixe
 
 # ---------- Constantes ----------
 EMOJI_VICTORY = "🏆"
@@ -186,6 +188,7 @@ def top_pingeurs(con: sqlite3.Connection, guild_id: int, limit: int = 20) -> Lis
 
 @with_db
 def hourly_split_7d(con: sqlite3.Connection, guild_id: int) -> list[int]:
+    """Retourne le nombre de défenses par tranche horaire (Matin, Journée, Soir, Nuit) sur les 7 derniers jours."""
     since = utcnow_i() - 7 * 24 * 3600
     cur = con.cursor()
     cur.execute("SELECT created_ts FROM messages WHERE guild_id=? AND created_ts>=?", (guild_id, since))
@@ -195,14 +198,10 @@ def hourly_split_7d(con: sqlite3.Connection, guild_id: int) -> list[int]:
         ts = r["created_ts"]
         dt_paris = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(ZoneInfo("Europe/Paris"))
         h_local = dt_paris.hour
-        if 6 <= h_local < 10:
-            counts[0] += 1
-        elif 10 <= h_local < 18:
-            counts[1] += 1
-        elif 18 <= h_local < 24:
-            counts[2] += 1
-        else:
-            counts[3] += 1
+        if 6 <= h_local < 10: counts[0] += 1
+        elif 10 <= h_local < 18: counts[1] += 1
+        elif 18 <= h_local < 24: counts[2] += 1
+        else: counts[3] += 1
     return counts
 
 # ---------- Embed constructeur ----------
@@ -233,7 +232,6 @@ async def build_ping_embed(msg: discord.Message) -> discord.Embed:
             if not u.bot:
                 defenders_ids.append(u.id)
                 add_participant(msg.id, u.id)
-
     names: List[str] = []
     for uid in defenders_ids[:20]:
         m = msg.guild.get_member(uid)
@@ -252,23 +250,23 @@ async def build_ping_embed(msg: discord.Message) -> discord.Embed:
     embed.set_footer(text="Ajoutez vos réactions : 🏆 gagné • ❌ perdu • 😡 incomplète • 👍 j'ai participé")
     return embed
 
-# ---------- View boutons persistante ----------
+# ---------- View boutons ----------
 class PingButtonsView(discord.ui.View):
     def __init__(self, bot: commands.Bot):
         super().__init__(timeout=None)
         self.bot = bot
 
-    @discord.ui.button(label="Guilde 1", style=discord.ButtonStyle.primary, custom_id="ping_Def")
+    @discord.ui.button(label="Guilde 1", style=discord.ButtonStyle.primary)
     async def btn_def(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle_click(interaction, side="Def")
 
-    @discord.ui.button(label="Guilde 2", style=discord.ButtonStyle.danger, custom_id="ping_Def2")
+    @discord.ui.button(label="Guilde 2", style=discord.ButtonStyle.danger)
     async def btn_def2(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle_click(interaction, side="Def2")
 
-    @discord.ui.button(label="TEST (Admin)", style=discord.ButtonStyle.secondary, custom_id="ping_Test")
+    @discord.ui.button(label="TEST (Admin)", style=discord.ButtonStyle.secondary)
     async def btn_test(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not any(r.permissions.administrator for r in interaction.user.roles):
+        if not any(r.id == ADMIN_ROLE_ID for r in interaction.user.roles):
             await interaction.response.send_message("Bouton réservé aux admins.", ephemeral=True)
             return
         await self._handle_click(interaction, side="Test")
@@ -278,16 +276,18 @@ class PingButtonsView(discord.ui.View):
             await interaction.response.defer(ephemeral=True, thinking=False)
         except Exception:
             pass
+
         guild = interaction.guild
-        if guild is None or ALERT_CHANNEL_ID == 0: return
+        if guild is None or ALERT_CHANNEL_ID == 0:
+            return
         alert_channel = guild.get_channel(ALERT_CHANNEL_ID)
-        if not isinstance(alert_channel, discord.TextChannel): return
+        if not isinstance(alert_channel, discord.TextChannel):
+            return
 
         role_id = 0
         if side == "Def": role_id = ROLE_DEF_ID
         elif side == "Def2": role_id = ROLE_DEF2_ID
         elif side == "Test": role_id = ROLE_TEST_ID
-
         role_mention = f"<@&{role_id}>" if role_id != 0 else ""
         content = f"{role_mention} — **Percepteur attaqué !** Merci de vous connecter." if role_mention else "**Percepteur attaqué !** Merci de vous connecter."
 
@@ -295,8 +295,6 @@ class PingButtonsView(discord.ui.View):
         upsert_message(msg, creator_id=interaction.user.id)
         emb = await build_ping_embed(msg)
         await msg.edit(embed=emb)
-
-        # Met à jour les leaderboards automatiquement
         await update_leaderboards(self.bot, guild)
         try:
             await interaction.followup.send("✅ Alerte envoyée.", ephemeral=True)
@@ -306,12 +304,14 @@ class PingButtonsView(discord.ui.View):
 # ---------- Leaderboards ----------
 async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
     channel = bot.get_channel(LEADERBOARD_CHANNEL_ID)
-    if channel is None: return
+    if channel is None:
+        return
 
     # ---------- Leaderboard Défense ----------
     def_post = get_leaderboard_post(guild.id, "defense")
     if def_post:
-        try: msg_def = await channel.fetch_message(def_post[1])
+        try:
+            msg_def = await channel.fetch_message(def_post[1])
         except discord.NotFound:
             msg_def = await channel.send("📊 **Leaderboard Défense**")
             set_leaderboard_post(guild.id, channel.id, msg_def.id, "defense")
@@ -343,7 +343,8 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
     # ---------- Leaderboard Pingeurs ----------
     ping_post = get_leaderboard_post(guild.id, "pingeur")
     if ping_post:
-        try: msg_ping = await channel.fetch_message(ping_post[1])
+        try:
+            msg_ping = await channel.fetch_message(ping_post[1])
         except discord.NotFound:
             msg_ping = await channel.send("📊 **Leaderboard Pingeurs**")
             set_leaderboard_post(guild.id, channel.id, msg_ping.id, "pingeur")
@@ -373,6 +374,43 @@ class PingCog(commands.Cog):
         )
         await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
 
+    # ---------- Nouveaux resets ----------
+    @app_commands.command(name="reset_defense", description="Archiver et réinitialiser le leaderboard Défense")
+    async def reset_defense(self, interaction: discord.Interaction):
+        await self._reset_leaderboard(interaction, "defense", "📊 Leaderboard Défense")
+
+    @app_commands.command(name="reset_pingeur", description="Archiver et réinitialiser le leaderboard Pingeurs")
+    async def reset_pingeur(self, interaction: discord.Interaction):
+        await self._reset_leaderboard(interaction, "pingeur", "📊 Leaderboard Pingeurs")
+
+    async def _reset_leaderboard(self, interaction: discord.Interaction, type_: str, title: str):
+        if not any(r.id == ADMIN_ROLE_ID for r in interaction.user.roles):
+            await interaction.response.send_message("Commande réservée aux admins.", ephemeral=True)
+            return
+
+        channel = self.bot.get_channel(LEADERBOARD_CHANNEL_ID)
+        archive_channel = self.bot.get_channel(ARCHIVE_CHANNEL_ID)
+        if not channel or not archive_channel:
+            await interaction.response.send_message("Canal introuvable.", ephemeral=True)
+            return
+
+        post = get_leaderboard_post(interaction.guild.id, type_)
+        if post:
+            try:
+                msg = await channel.fetch_message(post[1])
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                archive_embed = msg.embeds[0]
+                archive_embed.set_footer(text=f"Archivé le {timestamp}")
+                await archive_channel.send(embed=archive_embed)
+            except discord.NotFound:
+                pass
+
+        new_msg = await channel.send(f"{title}\n*(mis à jour le {datetime.now().strftime('%Y-%m-%d %H:%M:%S')})*")
+        set_leaderboard_post(interaction.guild.id, channel.id, new_msg.id, type_)
+
+        await interaction.response.send_message(f"{title} réinitialisé et archivé.", ephemeral=True)
+
+    # ---------- Listeners ----------
     @commands.Cog.listener()
     async def on_reaction_add(self, reaction: discord.Reaction, user: discord.User):
         if user.bot: return
@@ -411,16 +449,16 @@ class PingCog(commands.Cog):
 
     async def cog_load(self):
         print(f"{self.__class__.__name__} chargé")
-        # --- Re-attacher la view persistante ---
-        self.bot.add_view(PingButtonsView(self.bot))
 
 # ---------- Setup ----------
 async def setup(bot: commands.Bot):
     cog = PingCog(bot)
     await bot.add_cog(cog)
-    # ID du serveur de test
+
     TEST_GUILD_ID = 1280234399610179634
     test_guild = discord.Object(id=TEST_GUILD_ID)
-    # Ajouter la commande au tree du serveur
+
     bot.tree.add_command(cog.pingpanel, guild=test_guild)
+    bot.tree.add_command(cog.reset_defense, guild=test_guild)
+    bot.tree.add_command(cog.reset_pingeur, guild=test_guild)
     await bot.tree.sync(guild=test_guild)
