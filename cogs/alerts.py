@@ -8,7 +8,6 @@ from storage import (
     incr_leaderboard,
     get_message_creator,
     get_participants_detailed,
-    try_claim_first_defender,
     get_first_defender,
     add_participant,
 )
@@ -33,8 +32,8 @@ async def build_ping_embed(msg: discord.Message) -> discord.Embed:
     creator_id: Optional[int] = get_message_creator(msg.id)
     creator_member = msg.guild.get_member(creator_id) if creator_id else None
 
-    # Liste des participants depuis la DB (avec "ajouté par ...")
-    parts = get_participants_detailed(msg.id)  # [(user_id, added_by, ts), ...]
+    # Participants depuis DB
+    parts = get_participants_detailed(msg.id)
     lines: List[str] = []
     for user_id, added_by, _ in parts:
         member = msg.guild.get_member(user_id)
@@ -47,7 +46,7 @@ async def build_ping_embed(msg: discord.Message) -> discord.Embed:
             lines.append(name)
     defenders_block = "• " + "\n• ".join(lines) if lines else "_Aucun défenseur pour le moment._"
 
-    # Etat (couleur + texte) depuis les réactions actuelles
+    # Etat combat
     reactions = {str(r.emoji): r for r in msg.reactions}
     win  = (EMOJI_VICTORY in reactions and reactions[EMOJI_VICTORY].count > 0)
     loss = (EMOJI_DEFEAT in reactions and reactions[EMOJI_DEFEAT].count > 0)
@@ -63,41 +62,46 @@ async def build_ping_embed(msg: discord.Message) -> discord.Embed:
         if incomplete: etat += f"\n{EMOJI_INCOMP} Défense incomplète"
     else:
         color = discord.Color.orange()
-        etat = "⏳ **En cours / à confirmer**"
+        etat = "⏳ **En cours**"
         if incomplete: etat += f"\n{EMOJI_INCOMP} Défense incomplète"
 
     embed = discord.Embed(
-        title="🛡️ Alerte Percepteur",
+        title="🛡️ Alerte Attaque Percepteur",
         description="⚠️ **Connectez-vous pour prendre la défense !**",
         color=color,
     )
-    embed.add_field(name="État du combat", value=etat, inline=False)
-    embed.add_field(name="Défenseurs (👍 ou ajout via bouton)", value=defenders_block, inline=False)
     if creator_member:
         embed.add_field(name="⚡ Déclenché par", value=creator_member.display_name, inline=False)
+
+    embed.add_field(name="État du combat", value=etat, inline=False)
+    embed.add_field(name="\u200b", value="\u200b", inline=False)  # 2 lignes vides
+    embed.add_field(name="Défenseurs (👍 ou ajout via bouton)", value=defenders_block, inline=False)
     embed.set_footer(text="Réagissez : 🏆 gagné • ❌ perdu • 😡 incomplète • 👍 j'ai participé")
     return embed
 
-# ---------- View: sélection utilisateurs (max 3) ----------
+# ---------- View: sélection utilisateurs ----------
 class AddDefendersSelectView(discord.ui.View):
     def __init__(self, bot: commands.Bot, message_id: int, claimer_id: int):
         super().__init__(timeout=120)
         self.bot = bot
         self.message_id = message_id
         self.claimer_id = claimer_id
-        self.user_select = discord.ui.UserSelect(min_values=1, max_values=3, placeholder="Sélectionne jusqu'à 3 défenseurs")
-        self.add_item(self.user_select)
+        self.selected_users: List[discord.Member] = []
+
+    @discord.ui.select(cls=discord.ui.UserSelect, min_values=1, max_values=3, placeholder="Sélectionne jusqu'à 3 défenseurs")
+    async def user_select(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
+        self.selected_users = select.values
+        await interaction.response.defer(ephemeral=True)
 
     @discord.ui.button(label="Confirmer l'ajout", style=discord.ButtonStyle.success, emoji="✅")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # 🔧 CORRECTIF: on défère tout de suite pour éviter "échec de l'interaction"
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         if interaction.user.id != self.claimer_id:
             await interaction.followup.send("Action réservée au premier défenseur.", ephemeral=True)
             return
 
-        if not self.user_select.values:
+        if not self.selected_users:
             await interaction.followup.send("Sélection vide.", ephemeral=True)
             return
 
@@ -106,7 +110,7 @@ class AddDefendersSelectView(discord.ui.View):
         msg = await channel.fetch_message(self.message_id)
 
         added_any = False
-        for member in self.user_select.values:
+        for member in self.selected_users:
             inserted = add_participant(self.message_id, member.id, self.claimer_id, "button")
             if inserted:
                 added_any = True
@@ -126,22 +130,19 @@ class AddDefendersSelectView(discord.ui.View):
         await interaction.followup.send("✅ Ajout effectué.", ephemeral=True)
         self.stop()
 
-# ---------- View: bouton à ajouter après 1er 👍 ----------
+# ---------- View: bouton ajouter défenseurs ----------
 class AddDefendersButtonView(discord.ui.View):
     def __init__(self, bot: commands.Bot, message_id: int):
-        # View non persistante, attachée au message d'alerte
         super().__init__(timeout=None)
         self.bot = bot
         self.message_id = message_id
 
     @discord.ui.button(label="Ajouter défenseurs", style=discord.ButtonStyle.primary, emoji="🛡️", custom_id="add_defenders")
     async def add_defenders(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Vérifie que l'utilisateur est bien le premier défenseur
         first_id = get_first_defender(self.message_id)
         if first_id is None or interaction.user.id != first_id:
             await interaction.response.send_message("Bouton réservé au premier défenseur (premier 👍).", ephemeral=True)
             return
-        # Ouvre un select ephemeral
         await interaction.response.send_message(
             "Sélectionne jusqu'à 3 défenseurs à ajouter :",
             view=AddDefendersSelectView(self.bot, self.message_id, first_id),
@@ -168,20 +169,10 @@ class PingButtonsView(discord.ui.View):
             return
 
         role_mention = f"<@&{role_id}>" if role_id else ""
-        content = (
-            f"{role_mention} — **Percepteur attaqué !** Merci de vous connecter."
-            if role_mention else
-            "**Percepteur attaqué !** Merci de vous connecter."
-        )
+        content = f"{role_mention} — **Percepteur attaqué !** Merci de vous connecter." if role_mention else "**Percepteur attaqué !** Merci de vous connecter."
 
         msg = await alert_channel.send(content)
-        upsert_message(
-            msg.id,
-            msg.guild.id,
-            msg.channel.id,
-            int(msg.created_at.timestamp()),
-            creator_id=interaction.user.id,
-        )
+        upsert_message(msg.id, msg.guild.id, msg.channel.id, int(msg.created_at.timestamp()), creator_id=interaction.user.id)
 
         emb = await build_ping_embed(msg)
         try:
