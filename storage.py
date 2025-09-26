@@ -1,6 +1,6 @@
 import sqlite3
 import time
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -42,7 +42,7 @@ def create_db():
             creator_id INTEGER
         )
     """)
-    # participants (détaillé: qui a ajouté qui, source et timestamp)
+    # participants détaillés
     cur.execute("""
         CREATE TABLE IF NOT EXISTS participants(
             message_id INTEGER NOT NULL,
@@ -53,7 +53,7 @@ def create_db():
             PRIMARY KEY(message_id, user_id)
         )
     """)
-    # leaderboard_posts (où sont les messages de LB)
+    # leaderboard posts (ids des messages)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS leaderboard_posts(
             guild_id INTEGER,
@@ -63,25 +63,34 @@ def create_db():
             PRIMARY KEY (guild_id, type)
         )
     """)
-    # leaderboard_totals (compteurs cumulés)
+    # compteurs cumulés
     cur.execute("""
         CREATE TABLE IF NOT EXISTS leaderboard_totals(
             guild_id INTEGER NOT NULL,
-            type TEXT NOT NULL,
+            type TEXT NOT NULL,        -- 'defense' ou 'pingeur'
             user_id INTEGER NOT NULL,
             count INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(guild_id, type, user_id)
         )
     """)
+    # agrégats (sauvegarde/restauration)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS aggregates(
+            guild_id INTEGER NOT NULL,
+            scope TEXT NOT NULL,       -- 'global', 'team1', 'team2', 'hourly'
+            key TEXT NOT NULL,         -- ex: attacks,wins,losses,incomplete | morning,afternoon,evening,night
+            value INTEGER NOT NULL,
+            PRIMARY KEY (guild_id, scope, key)
+        )
+    """)
     con.commit()
 
-    # ---- Migration: ajouter la colonne team dans messages si manquante ----
+    # Migration : colonne team
     try:
         if not _column_exists(con, "messages", "team"):
             cur.execute("ALTER TABLE messages ADD COLUMN team INTEGER")
             con.commit()
     except Exception:
-        # si la colonne existe déjà ou autre, on ignore
         pass
 
     con.close()
@@ -98,7 +107,6 @@ def upsert_message(
     team: Optional[int] = None,
 ):
     cur = con.cursor()
-    # On insère puis on met à jour team si besoin (au cas où l’événement initial n’avait pas la team)
     cur.execute("""
         INSERT INTO messages(message_id, guild_id, channel_id, created_ts, outcome, incomplete, last_ts, creator_id, team)
         VALUES (?,?,?,?,NULL,0,?,?,?)
@@ -139,7 +147,7 @@ def remove_participant(con: sqlite3.Connection, message_id: int, user_id: int) -
     return cur.rowcount > 0
 
 @with_db
-def get_participant_entry(con: sqlite3.Connection, message_id: int, user_id: int) -> Optional[Tuple[int, str, int]]:
+def get_participant_entry(con: sqlite3.Connection, message_id: int, user_id: int):
     row = con.execute("SELECT added_by, source, ts FROM participants WHERE message_id=? AND user_id=?", (message_id, user_id)).fetchone()
     return (row["added_by"], row["source"], row["ts"]) if row else None
 
@@ -175,6 +183,10 @@ def decr_leaderboard(con: sqlite3.Connection, guild_id: int, type_: str, user_id
     """, (guild_id, type_, user_id))
 
 @with_db
+def reset_leaderboard(con: sqlite3.Connection, guild_id: int, type_: str):
+    con.execute("DELETE FROM leaderboard_totals WHERE guild_id=? AND type=?", (guild_id, type_))
+
+@with_db
 def get_leaderboard_post(con: sqlite3.Connection, guild_id: int, type_: str):
     row = con.execute("SELECT channel_id, message_id FROM leaderboard_posts WHERE guild_id=? AND type=?", (guild_id, type_)).fetchone()
     return (row["channel_id"], row["message_id"]) if row else None
@@ -198,6 +210,51 @@ def get_leaderboard_totals(con: sqlite3.Connection, guild_id: int, type_: str, l
     return [(r["user_id"], r["count"]) for r in rows]
 
 @with_db
+def get_leaderboard_totals_all(con: sqlite3.Connection, guild_id: int, type_: str) -> Dict[int, int]:
+    rows = con.execute("""
+        SELECT user_id, count FROM leaderboard_totals
+        WHERE guild_id=? AND type=?
+        ORDER BY count DESC
+    """, (guild_id, type_)).fetchall()
+    return {r["user_id"]: r["count"] for r in rows}
+
+# ---------- Aggregates (lecture/écriture) ----------
+@with_db
+def set_aggregate(con: sqlite3.Connection, guild_id: int, scope: str, key: str, value: int):
+    con.execute("""
+        INSERT INTO aggregates(guild_id, scope, key, value)
+        VALUES (?,?,?,?)
+        ON CONFLICT(guild_id, scope, key) DO UPDATE SET value=excluded.value
+    """, (guild_id, scope, key, value))
+
+@with_db
+def get_aggregate(con: sqlite3.Connection, guild_id: int, scope: str, key: str) -> int:
+    row = con.execute("SELECT value FROM aggregates WHERE guild_id=? AND scope=? AND key=?", (guild_id, scope, key)).fetchone()
+    return int(row["value"]) if row else 0
+
+@with_db
+def seed_aggregates(con: sqlite3.Connection, guild_id: int, global_tot: dict, team1: dict, team2: dict, hourly: dict):
+    for key, val in global_tot.items():
+        set_aggregate(guild_id, "global", key, int(val))
+    for key, val in team1.items():
+        set_aggregate(guild_id, "team1", key, int(val))
+    for key, val in team2.items():
+        set_aggregate(guild_id, "team2", key, int(val))
+    for key, val in hourly.items():
+        set_aggregate(guild_id, "hourly", key, int(val))
+
+@with_db
+def seed_leaderboard_totals(con: sqlite3.Connection, guild_id: int, type_: str, totals: Dict[int, int]):
+    # Reset puis insert
+    con.execute("DELETE FROM leaderboard_totals WHERE guild_id=? AND type=?", (guild_id, type_))
+    for uid, cnt in totals.items():
+        con.execute("""
+            INSERT INTO leaderboard_totals(guild_id, type, user_id, count)
+            VALUES (?,?,?,?)
+        """, (guild_id, type_, int(uid), int(cnt)))
+
+# ---------- Aggregates-aware readers ----------
+@with_db
 def agg_totals_all(con: sqlite3.Connection, guild_id: int) -> Tuple[int, int, int, int]:
     row = con.execute("""
         SELECT
@@ -208,8 +265,17 @@ def agg_totals_all(con: sqlite3.Connection, guild_id: int) -> Tuple[int, int, in
         FROM messages
         WHERE guild_id=?
     """, (guild_id,)).fetchone()
-    w,l,inc,tot = row["w"] or 0, row["l"] or 0, row["inc"] or 0, row["tot"] or 0
-    return (w, l, inc, tot)
+    w,l,inc,tot = (row["w"] or 0), (row["l"] or 0), (row["inc"] or 0), (row["tot"] or 0)
+    if tot > 0:
+        return (w, l, inc, tot)
+    # fallback aggregates
+    att = get_aggregate(guild_id, "global", "attacks")
+    return (
+        get_aggregate(guild_id, "global", "wins"),
+        get_aggregate(guild_id, "global", "losses"),
+        get_aggregate(guild_id, "global", "incomplete"),
+        att,
+    )
 
 @with_db
 def agg_totals_by_team(con: sqlite3.Connection, guild_id: int, team: int) -> Tuple[int, int, int, int]:
@@ -222,53 +288,39 @@ def agg_totals_by_team(con: sqlite3.Connection, guild_id: int, team: int) -> Tup
         FROM messages
         WHERE guild_id=? AND team=?
     """, (guild_id, team)).fetchone()
-    if not row:
-        return (0,0,0,0)
-    return (row["w"] or 0, row["l"] or 0, row["inc"] or 0, row["tot"] or 0)
+    w,l,inc,tot = (row["w"] or 0), (row["l"] or 0), (row["inc"] or 0), (row["tot"] or 0)
+    if tot > 0:
+        return (w, l, inc, tot)
+    scope = "team1" if team == 1 else "team2"
+    att = get_aggregate(guild_id, scope, "attacks")
+    return (
+        get_aggregate(guild_id, scope, "wins"),
+        get_aggregate(guild_id, scope, "losses"),
+        get_aggregate(guild_id, scope, "incomplete"),
+        att,
+    )
 
 @with_db
 def hourly_split_all(con: sqlite3.Connection, guild_id: int) -> tuple[int, int, int, int]:
-    """
-    Répartition ALL-TIME par tranches locales Europe/Paris:
-    0: Matin (6–10), 1: Après-midi (10–18), 2: Soir (18–00), 3: Nuit (00–6)
-    """
     rows = con.execute("SELECT created_ts FROM messages WHERE guild_id=?", (guild_id,)).fetchall()
-    counts = [0, 0, 0, 0]
-    for (ts,) in rows:
-        dt_paris = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(ZoneInfo("Europe/Paris"))
-        h = dt_paris.hour
-        if 6 <= h < 10:
-            counts[0] += 1
-        elif 10 <= h < 18:
-            counts[1] += 1
-        elif 18 <= h < 24:
-            counts[2] += 1
-        else:
-            counts[3] += 1
-    return tuple(counts)
-
-@with_db
-def get_player_stats(con: sqlite3.Connection, guild_id: int, user_id: int) -> Tuple[int,int,int,int]:
-    cur = con.cursor()
-    # Défenses prises
-    cur.execute("""
-        SELECT COUNT(*) FROM participants p
-        JOIN messages m ON m.message_id=p.message_id
-        WHERE m.guild_id=? AND p.user_id=?
-    """, (guild_id, user_id))
-    defenses = cur.fetchone()[0] or 0
-    # Pings faits
-    cur.execute("SELECT COUNT(*) FROM messages WHERE guild_id=? AND creator_id=?", (guild_id, user_id))
-    pings = cur.fetchone()[0] or 0
-    # Victoires/défaites
-    cur.execute("""
-        SELECT SUM(CASE WHEN m.outcome='win' THEN 1 ELSE 0 END),
-               SUM(CASE WHEN m.outcome='loss' THEN 1 ELSE 0 END)
-        FROM messages m
-        JOIN participants p ON m.message_id=p.message_id
-        WHERE m.guild_id=? AND p.user_id=?
-    """, (guild_id, user_id))
-    row = cur.fetchone()
-    wins = row[0] or 0
-    losses = row[1] or 0
-    return defenses, pings, wins, losses
+    if rows:
+        counts = [0, 0, 0, 0]
+        for (ts,) in rows:
+            dt_paris = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(ZoneInfo("Europe/Paris"))
+            h = dt_paris.hour
+            if 6 <= h < 10:
+                counts[0] += 1
+            elif 10 <= h < 18:
+                counts[1] += 1
+            elif 18 <= h < 24:
+                counts[2] += 1
+            else:
+                counts[3] += 1
+        return tuple(counts)
+    # fallback aggregates
+    return (
+        get_aggregate(guild_id, "hourly", "morning"),
+        get_aggregate(guild_id, "hourly", "afternoon"),
+        get_aggregate(guild_id, "hourly", "evening"),
+        get_aggregate(guild_id, "hourly", "night"),
+    )
