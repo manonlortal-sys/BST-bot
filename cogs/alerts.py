@@ -90,12 +90,15 @@ class AddDefendersSelectView(discord.ui.View):
 
     @discord.ui.button(label="Confirmer l'ajout", style=discord.ButtonStyle.success, emoji="✅")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # 🔧 CORRECTIF: on défère tout de suite pour éviter "échec de l'interaction"
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
         if interaction.user.id != self.claimer_id:
-            await interaction.response.send_message("Action réservée au premier défenseur.", ephemeral=True)
+            await interaction.followup.send("Action réservée au premier défenseur.", ephemeral=True)
             return
 
         if not self.user_select.values:
-            await interaction.response.send_message("Sélection vide.", ephemeral=True)
+            await interaction.followup.send("Sélection vide.", ephemeral=True)
             return
 
         guild = interaction.guild
@@ -120,7 +123,7 @@ class AddDefendersSelectView(discord.ui.View):
             except Exception:
                 pass
 
-        await interaction.response.send_message("Ajout effectué.", ephemeral=True)
+        await interaction.followup.send("✅ Ajout effectué.", ephemeral=True)
         self.stop()
 
 # ---------- View: bouton à ajouter après 1er 👍 ----------
