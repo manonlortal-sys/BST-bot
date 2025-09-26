@@ -185,7 +185,6 @@ class PingButtonsView(discord.ui.View):
 
         msg = await alert_channel.send(content)
 
-        # Enregistre message + team + créateur
         upsert_message(
             msg.id,
             msg.guild.id,
