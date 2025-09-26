@@ -1,3 +1,4 @@
+# cogs/alerts.py
 import os
 from typing import List, Optional
 import discord
@@ -212,11 +213,13 @@ class PingButtonsView(discord.ui.View):
         except Exception:
             pass
 
-    @discord.ui.button(label="Guilde 1", style=discord.ButtonStyle.primary, custom_id="pingpanel:def1")
+    # 🛡️ emoji ajouté ici
+    @discord.ui.button(label="Guilde 1", style=discord.ButtonStyle.primary, emoji="🛡️", custom_id="pingpanel:def1")
     async def btn_def(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle_click(interaction, ROLE_DEF_ID, team=1)
 
-    @discord.ui.button(label="Guilde 2", style=discord.ButtonStyle.danger, custom_id="pingpanel:def2")
+    # 🛡️ emoji ajouté ici
+    @discord.ui.button(label="Guilde 2", style=discord.ButtonStyle.danger, emoji="🛡️", custom_id="pingpanel:def2")
     async def btn_def2(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle_click(interaction, ROLE_DEF2_ID, team=2)
 
@@ -239,8 +242,21 @@ class AlertsCog(commands.Cog):
         except Exception:
             pass
 
+        # === Nouveau contenu de l'embed ===
+        title = "⚔️ Ping défenses percepteurs ⚔️"
+        lines = []
+        lines.append("**📢 Clique sur le bouton de la guilde qui se fait attaquer pour générer automatiquement un ping dans le canal défense.**")
+        lines.append("")  # saut de ligne
+        lines.append("*⚠️ Le bouton **TEST** n’est accessible qu’aux administrateurs pour la gestion du bot.*")
+
+        embed = discord.Embed(
+            title=title,
+            description="\n".join(lines),
+            color=discord.Color.blurple()
+        )
+
         await interaction.followup.send(
-            "Panneau prêt :",
+            embed=embed,
             view=PingButtonsView(self.bot),
             ephemeral=False
         )
