@@ -63,6 +63,14 @@ async def setup_hook():
 async def on_ready():
     print(f"✅ Connecté en tant que {bot.user} (ID: {bot.user.id})")
 
+    # 🔁 Sync par serveur pour rendre les slash visibles immédiatement (ex: /stats)
+    try:
+        for g in bot.guilds:
+            await bot.tree.sync(guild=discord.Object(id=g.id))
+        print("✅ Slash commands synced per guild")
+    except Exception as e:
+        print("❌ Per-guild slash sync error:", e)
+
     if LEADERBOARD_CHANNEL_ID:
         channel = bot.get_channel(LEADERBOARD_CHANNEL_ID)
         if channel:
