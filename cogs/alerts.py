@@ -98,13 +98,11 @@ class AddDefendersSelectView(discord.ui.View):
         placeholder="Sélectionne jusqu'à 3 défenseurs",
     )
     async def user_select(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
-        # Stocke la sélection, accuse réception rapidement (évite timeout)
         self.selected_users = select.values
         await interaction.response.defer(ephemeral=True)
 
     @discord.ui.button(label="Confirmer l'ajout", style=discord.ButtonStyle.success, emoji="✅")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Déférer pour éviter "Interaction failed"
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         if interaction.user.id != self.claimer_id:
@@ -116,7 +114,6 @@ class AddDefendersSelectView(discord.ui.View):
             return
 
         guild = interaction.guild
-        # supporte salon OU thread
         channel = guild.get_channel(interaction.channel_id) or guild.get_thread(interaction.channel_id)
         if channel is None:
             await interaction.followup.send("Impossible de retrouver le message d'alerte.", ephemeral=True)
@@ -149,14 +146,12 @@ class AddDefendersSelectView(discord.ui.View):
 # ---------- View: bouton "Ajouter défenseurs" (après 1er 👍) ----------
 class AddDefendersButtonView(discord.ui.View):
     def __init__(self, bot: commands.Bot, message_id: int):
-        # ⏱️ timeout fini (2h) pour éviter persistance problématique après redeploy
-        super().__init__(timeout=7200)
+        super().__init__(timeout=7200)  # 2h
         self.bot = bot
         self.message_id = message_id
 
     @discord.ui.button(label="Ajouter défenseurs", style=discord.ButtonStyle.primary, emoji="🛡️", custom_id="add_defenders")
     async def add_defenders(self, interaction: discord.Interaction, button: discord.ui.Button):
-        from storage import get_first_defender  # import local pour éviter cycle
         first_id = get_first_defender(self.message_id)
         if first_id is None or interaction.user.id != first_id:
             await interaction.response.send_message("Bouton réservé au premier défenseur (premier 👍).", ephemeral=True)
@@ -171,7 +166,7 @@ class AddDefendersButtonView(discord.ui.View):
 # ---------- View boutons du panneau ----------
 class PingButtonsView(discord.ui.View):
     def __init__(self, bot: commands.Bot):
-        super().__init__(timeout=None)  # persistante (on la re-enregistre au boot)
+        super().__init__(timeout=None)  # persistante (ré-enregistrée au boot)
         self.bot = bot
 
     async def _handle_click(self, interaction: discord.Interaction, role_id: int):
@@ -184,7 +179,6 @@ class PingButtonsView(discord.ui.View):
         if guild is None or ALERT_CHANNEL_ID == 0:
             return
 
-        # Salon ou thread cible
         alert_channel = guild.get_channel(ALERT_CHANNEL_ID) or guild.get_thread(ALERT_CHANNEL_ID)
         if alert_channel is None:
             return
@@ -198,7 +192,6 @@ class PingButtonsView(discord.ui.View):
 
         msg = await alert_channel.send(content)
 
-        # Enregistre le créateur de l'alerte (pour "Déclenché par")
         upsert_message(
             msg.id,
             msg.guild.id,
@@ -206,7 +199,7 @@ class PingButtonsView(discord.ui.View):
             int(msg.created_at.timestamp()),
             creator_id=interaction.user.id,
         )
-        # ✅ Incrémente le leaderboard "pingeur"
+        # pingeur++
         try:
             incr_leaderboard(guild.id, "pingeur", interaction.user.id)
         except Exception:
@@ -245,10 +238,16 @@ class AlertsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    # ✅ commande pour publier/re-publier un panneau d'alerte
     @app_commands.command(name="pingpanel", description="Publier le panneau d’alerte percepteur")
     async def pingpanel(self, interaction: discord.Interaction):
-        await interaction.response.send_message(
+        # ✅ Déférer d'abord pour éviter 10062
+        try:
+            await interaction.response.defer(ephemeral=False, thinking=False)
+        except Exception:
+            pass
+
+        # Puis envoyer via followup
+        await interaction.followup.send(
             "Panneau prêt :",
             view=PingButtonsView(self.bot),
             ephemeral=False
