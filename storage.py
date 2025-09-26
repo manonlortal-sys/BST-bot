@@ -40,7 +40,7 @@ def create_db():
             message_id INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
             added_by INTEGER,
-            source TEXT,       -- "reaction" | "button"
+            source TEXT,
             ts INTEGER NOT NULL,
             PRIMARY KEY(message_id, user_id)
         )
@@ -83,13 +83,21 @@ def get_message_creator(con: sqlite3.Connection, message_id: int) -> Optional[in
     row = cur.fetchone()
     return row["creator_id"] if row else None
 
+@with_db
+def set_outcome(con: sqlite3.Connection, message_id: int, outcome: Optional[str]):
+    cur = con.cursor()
+    cur.execute("UPDATE messages SET outcome=?, last_ts=? WHERE message_id=?", (outcome, utcnow_i(), message_id))
+
+@with_db
+def set_incomplete(con: sqlite3.Connection, message_id: int, incomplete: bool):
+    cur = con.cursor()
+    cur.execute("UPDATE messages SET incomplete=?, last_ts=? WHERE message_id=?", (1 if incomplete else 0, utcnow_i(), message_id))
+
 # ---------- Participants ----------
 @with_db
 def add_participant(con: sqlite3.Connection, message_id: int, user_id: int, added_by: Optional[int] = None, source: str = "reaction") -> bool:
-    """Ajoute un participant, retourne True si inséré, False si déjà présent."""
-    cur = con.cursor()
     try:
-        cur.execute("""
+        con.execute("""
             INSERT INTO participants(message_id, user_id, added_by, source, ts)
             VALUES (?,?,?,?,?)
         """, (message_id, user_id, added_by, source, utcnow_i()))
@@ -99,17 +107,12 @@ def add_participant(con: sqlite3.Connection, message_id: int, user_id: int, adde
 
 @with_db
 def remove_participant(con: sqlite3.Connection, message_id: int, user_id: int) -> bool:
-    """Supprime le participant. Retourne True si une ligne a été supprimée."""
     cur = con.cursor()
     cur.execute("DELETE FROM participants WHERE message_id=? AND user_id=?", (message_id, user_id))
     return cur.rowcount > 0
 
 @with_db
 def get_participant_entry(con: sqlite3.Connection, message_id: int, user_id: int) -> Optional[Tuple[int, str, int]]:
-    """
-    Retourne (added_by, source, ts) si l'entrée existe, sinon None.
-    source ∈ {"reaction","button"}.
-    """
     cur = con.cursor()
     cur.execute("SELECT added_by, source, ts FROM participants WHERE message_id=? AND user_id=?", (message_id, user_id))
     row = cur.fetchone()
@@ -119,7 +122,6 @@ def get_participant_entry(con: sqlite3.Connection, message_id: int, user_id: int
 
 @with_db
 def get_participants_detailed(con: sqlite3.Connection, message_id: int) -> List[Tuple[int, Optional[int], int]]:
-    """Retourne [(user_id, added_by, ts), ...] triés par ts asc."""
     cur = con.cursor()
     cur.execute("SELECT user_id, added_by, ts FROM participants WHERE message_id=? ORDER BY ts ASC", (message_id,))
     return [(row["user_id"], row["added_by"], row["ts"]) for row in cur.fetchall()]
@@ -134,8 +136,7 @@ def get_first_defender(con: sqlite3.Connection, message_id: int) -> Optional[int
 # ---------- Leaderboard ----------
 @with_db
 def incr_leaderboard(con: sqlite3.Connection, guild_id: int, type_: str, user_id: int):
-    cur = con.cursor()
-    cur.execute("""
+    con.execute("""
         INSERT INTO leaderboard_totals(guild_id, type, user_id, count)
         VALUES (?,?,?,1)
         ON CONFLICT(guild_id, type, user_id) DO UPDATE SET count=count+1
@@ -143,18 +144,16 @@ def incr_leaderboard(con: sqlite3.Connection, guild_id: int, type_: str, user_id
 
 @with_db
 def decr_leaderboard(con: sqlite3.Connection, guild_id: int, type_: str, user_id: int):
-    cur = con.cursor()
-    cur.execute("""
+    con.execute("""
         UPDATE leaderboard_totals
         SET count = count - 1
         WHERE guild_id=? AND type=? AND user_id=?
     """, (guild_id, type_, user_id))
-    cur.execute("""
+    con.execute("""
         DELETE FROM leaderboard_totals
         WHERE guild_id=? AND type=? AND user_id=? AND count<=0
     """, (guild_id, type_, user_id))
 
-# ---------- Stats ----------
 @with_db
 def get_leaderboard_post(con: sqlite3.Connection, guild_id: int, type_: str):
     cur = con.cursor()
@@ -164,8 +163,7 @@ def get_leaderboard_post(con: sqlite3.Connection, guild_id: int, type_: str):
 
 @with_db
 def set_leaderboard_post(con: sqlite3.Connection, guild_id: int, channel_id: int, message_id: int, type_: str):
-    cur = con.cursor()
-    cur.execute("""
+    con.execute("""
         INSERT INTO leaderboard_posts(guild_id, channel_id, message_id, type)
         VALUES (?,?,?,?)
         ON CONFLICT(guild_id, type) DO UPDATE SET channel_id=excluded.channel_id, message_id=excluded.message_id
