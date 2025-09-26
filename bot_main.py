@@ -4,7 +4,6 @@ from flask import Flask
 import discord
 from discord.ext import commands
 
-# ========= Flask keep-alive =========
 app = Flask(__name__)
 
 @app.get("/")
@@ -17,29 +16,24 @@ def run_flask():
 
 threading.Thread(target=run_flask, daemon=True).start()
 
-# ========= Discord setup =========
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 if not DISCORD_TOKEN:
     raise SystemExit("Missing DISCORD_TOKEN environment variable.")
 
 LEADERBOARD_CHANNEL_ID = int(os.getenv("LEADERBOARD_CHANNEL_ID", "0"))
 
-# ---------- Intents ----------
 intents = discord.Intents.default()
 intents.guilds = True
 intents.members = True
 intents.messages = True
 intents.reactions = True
-# message_content pas nécessaire pour ton bot
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ========= Setup Hook =========
 @bot.event
 async def setup_hook():
     print("🚀 setup_hook démarré")
 
-    # Charger les cogs
     for ext in ["cogs.panel", "cogs.alerts", "cogs.leaderboard", "cogs.reactions"]:
         try:
             await bot.load_extension(ext)
@@ -47,7 +41,6 @@ async def setup_hook():
         except Exception as e:
             print(f"❌ Erreur chargement {ext} :", e)
 
-    # Sync global des slashs
     try:
         await bot.tree.sync()
         print("✅ Slash commands sync (global)")
@@ -62,15 +55,16 @@ async def on_ready():
         channel = bot.get_channel(LEADERBOARD_CHANNEL_ID)
         if channel:
             try:
-                messages = []
+                msgs = []
                 async for m in channel.history(limit=10):
-                    messages.append(m)
-
-                if not any("Leaderboard" in (m.content or "") for m in messages):
+                    msgs.append(m)
+                if not any("Leaderboard" in (m.content or "") for m in msgs):
                     await channel.send("📊 **Leaderboard initialisé**")
             except Exception as e:
                 print("❌ Erreur création message leaderboard :", e)
 
 if __name__ == "__main__":
     print("⚡ Démarrage du bot...")
+    from storage import create_db
+    create_db()  # crée les tables si besoin
     bot.run(DISCORD_TOKEN)
