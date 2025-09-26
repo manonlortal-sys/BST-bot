@@ -32,7 +32,6 @@ async def build_ping_embed(msg: discord.Message) -> discord.Embed:
     creator_id: Optional[int] = get_message_creator(msg.id)
     creator_member = msg.guild.get_member(creator_id) if creator_id else None
 
-    # Participants depuis DB (+ "ajouté par …")
     parts = get_participants_detailed(msg.id)  # [(user_id, added_by, ts)]
     lines: List[str] = []
     for user_id, added_by, _ in parts:
@@ -46,7 +45,6 @@ async def build_ping_embed(msg: discord.Message) -> discord.Embed:
             lines.append(name)
     defenders_block = "• " + "\n• ".join(lines) if lines else "_Aucun défenseur pour le moment._"
 
-    # Etat du combat (d'après réactions)
     reactions = {str(r.emoji): r for r in msg.reactions}
     win        = EMOJI_VICTORY in reactions and reactions[EMOJI_VICTORY].count > 0
     loss       = EMOJI_DEFEAT  in reactions and reactions[EMOJI_DEFEAT].count  > 0
@@ -76,13 +74,12 @@ async def build_ping_embed(msg: discord.Message) -> discord.Embed:
     if creator_member:
         embed.add_field(name="⚡ Déclenché par", value=creator_member.display_name, inline=False)
     embed.add_field(name="État du combat", value=etat, inline=False)
-    embed.add_field(name="\u200b", value="\u200b", inline=False)  # 2 lignes vides
+    embed.add_field(name="\u200b", value="\u200b", inline=False)  # séparation visuelle
     embed.add_field(name="Défenseurs (👍 ou ajout via bouton)", value=defenders_block, inline=False)
     embed.set_footer(text="Réagissez : 🏆 gagné • ❌ perdu • 😡 incomplète • 👍 j'ai participé")
     return embed
 
-
-# ---------- View: sélection utilisateurs (max 3) ----------
+# ---------- Views ----------
 class AddDefendersSelectView(discord.ui.View):
     def __init__(self, bot: commands.Bot, message_id: int, claimer_id: int):
         super().__init__(timeout=120)
@@ -142,8 +139,6 @@ class AddDefendersSelectView(discord.ui.View):
         await interaction.followup.send("✅ Ajout effectué.", ephemeral=True)
         self.stop()
 
-
-# ---------- View: bouton "Ajouter défenseurs" (après 1er 👍) ----------
 class AddDefendersButtonView(discord.ui.View):
     def __init__(self, bot: commands.Bot, message_id: int):
         super().__init__(timeout=7200)  # 2h
@@ -162,14 +157,12 @@ class AddDefendersButtonView(discord.ui.View):
             ephemeral=True
         )
 
-
-# ---------- View boutons du panneau ----------
 class PingButtonsView(discord.ui.View):
     def __init__(self, bot: commands.Bot):
         super().__init__(timeout=None)  # persistante (ré-enregistrée au boot)
         self.bot = bot
 
-    async def _handle_click(self, interaction: discord.Interaction, role_id: int):
+    async def _handle_click(self, interaction: discord.Interaction, role_id: int, team: Optional[int]):
         try:
             await interaction.response.defer(ephemeral=True, thinking=False)
         except Exception:
@@ -192,12 +185,14 @@ class PingButtonsView(discord.ui.View):
 
         msg = await alert_channel.send(content)
 
+        # Enregistre message + team + créateur
         upsert_message(
             msg.id,
             msg.guild.id,
             msg.channel.id,
             int(msg.created_at.timestamp()),
             creator_id=interaction.user.id,
+            team=team,
         )
         # pingeur++
         try:
@@ -220,19 +215,18 @@ class PingButtonsView(discord.ui.View):
 
     @discord.ui.button(label="Guilde 1", style=discord.ButtonStyle.primary, custom_id="pingpanel:def1")
     async def btn_def(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._handle_click(interaction, ROLE_DEF_ID)
+        await self._handle_click(interaction, ROLE_DEF_ID, team=1)
 
     @discord.ui.button(label="Guilde 2", style=discord.ButtonStyle.danger, custom_id="pingpanel:def2")
     async def btn_def2(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._handle_click(interaction, ROLE_DEF2_ID)
+        await self._handle_click(interaction, ROLE_DEF2_ID, team=2)
 
     @discord.ui.button(label="TEST (Admin)", style=discord.ButtonStyle.secondary, custom_id="pingpanel:test")
     async def btn_test(self, interaction: discord.Interaction, button: discord.ui.Button):
         if ADMIN_ROLE_ID and not any(r.id == ADMIN_ROLE_ID for r in interaction.user.roles):
             await interaction.response.send_message("Bouton réservé aux admins.", ephemeral=True)
             return
-        await self._handle_click(interaction, ROLE_TEST_ID)
-
+        await self._handle_click(interaction, ROLE_TEST_ID, team=0)
 
 class AlertsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -240,19 +234,17 @@ class AlertsCog(commands.Cog):
 
     @app_commands.command(name="pingpanel", description="Publier le panneau d’alerte percepteur")
     async def pingpanel(self, interaction: discord.Interaction):
-        # Déférer d'abord pour éviter 10062
+        # Déférer d'abord (évite Unknown interaction 10062)
         try:
             await interaction.response.defer(ephemeral=False, thinking=False)
         except Exception:
             pass
 
-        # Puis envoyer via followup
         await interaction.followup.send(
             "Panneau prêt :",
             view=PingButtonsView(self.bot),
             ephemeral=False
         )
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AlertsCog(bot))
