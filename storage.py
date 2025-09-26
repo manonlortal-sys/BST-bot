@@ -1,6 +1,5 @@
 import sqlite3
 import time
-from datetime import datetime, timezone
 from typing import Optional, Tuple, List
 
 DB_PATH = "defense_leaderboard.db"
@@ -41,9 +40,27 @@ def create_db():
             message_id INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
             added_by INTEGER,
-            source TEXT,
+            source TEXT,       -- "reaction" | "button"
             ts INTEGER NOT NULL,
             PRIMARY KEY(message_id, user_id)
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS leaderboard_posts(
+            guild_id INTEGER,
+            channel_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL,
+            type TEXT NOT NULL,
+            PRIMARY KEY (guild_id, type)
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS leaderboard_totals(
+            guild_id INTEGER NOT NULL,
+            type TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(guild_id, type, user_id)
         )
     """)
     con.commit()
@@ -81,8 +98,28 @@ def add_participant(con: sqlite3.Connection, message_id: int, user_id: int, adde
         return False
 
 @with_db
+def remove_participant(con: sqlite3.Connection, message_id: int, user_id: int) -> bool:
+    """Supprime le participant. Retourne True si une ligne a été supprimée."""
+    cur = con.cursor()
+    cur.execute("DELETE FROM participants WHERE message_id=? AND user_id=?", (message_id, user_id))
+    return cur.rowcount > 0
+
+@with_db
+def get_participant_entry(con: sqlite3.Connection, message_id: int, user_id: int) -> Optional[Tuple[int, str, int]]:
+    """
+    Retourne (added_by, source, ts) si l'entrée existe, sinon None.
+    source ∈ {"reaction","button"}.
+    """
+    cur = con.cursor()
+    cur.execute("SELECT added_by, source, ts FROM participants WHERE message_id=? AND user_id=?", (message_id, user_id))
+    row = cur.fetchone()
+    if not row:
+        return None
+    return (row["added_by"], row["source"], row["ts"])
+
+@with_db
 def get_participants_detailed(con: sqlite3.Connection, message_id: int) -> List[Tuple[int, Optional[int], int]]:
-    """Retourne [(user_id, added_by, ts), ...]"""
+    """Retourne [(user_id, added_by, ts), ...] triés par ts asc."""
     cur = con.cursor()
     cur.execute("SELECT user_id, added_by, ts FROM participants WHERE message_id=? ORDER BY ts ASC", (message_id,))
     return [(row["user_id"], row["added_by"], row["ts"]) for row in cur.fetchall()]
@@ -93,3 +130,93 @@ def get_first_defender(con: sqlite3.Connection, message_id: int) -> Optional[int
     cur.execute("SELECT user_id FROM participants WHERE message_id=? ORDER BY ts ASC LIMIT 1", (message_id,))
     row = cur.fetchone()
     return row["user_id"] if row else None
+
+# ---------- Leaderboard ----------
+@with_db
+def incr_leaderboard(con: sqlite3.Connection, guild_id: int, type_: str, user_id: int):
+    cur = con.cursor()
+    cur.execute("""
+        INSERT INTO leaderboard_totals(guild_id, type, user_id, count)
+        VALUES (?,?,?,1)
+        ON CONFLICT(guild_id, type, user_id) DO UPDATE SET count=count+1
+    """, (guild_id, type_, user_id))
+
+@with_db
+def decr_leaderboard(con: sqlite3.Connection, guild_id: int, type_: str, user_id: int):
+    cur = con.cursor()
+    cur.execute("""
+        UPDATE leaderboard_totals
+        SET count = count - 1
+        WHERE guild_id=? AND type=? AND user_id=?
+    """, (guild_id, type_, user_id))
+    cur.execute("""
+        DELETE FROM leaderboard_totals
+        WHERE guild_id=? AND type=? AND user_id=? AND count<=0
+    """, (guild_id, type_, user_id))
+
+# ---------- Stats ----------
+@with_db
+def get_leaderboard_post(con: sqlite3.Connection, guild_id: int, type_: str):
+    cur = con.cursor()
+    cur.execute("SELECT channel_id, message_id FROM leaderboard_posts WHERE guild_id=? AND type=?", (guild_id, type_))
+    row = cur.fetchone()
+    return (row["channel_id"], row["message_id"]) if row else None
+
+@with_db
+def set_leaderboard_post(con: sqlite3.Connection, guild_id: int, channel_id: int, message_id: int, type_: str):
+    cur = con.cursor()
+    cur.execute("""
+        INSERT INTO leaderboard_posts(guild_id, channel_id, message_id, type)
+        VALUES (?,?,?,?)
+        ON CONFLICT(guild_id, type) DO UPDATE SET channel_id=excluded.channel_id, message_id=excluded.message_id
+    """, (guild_id, channel_id, message_id, type_))
+
+@with_db
+def get_leaderboard_totals(con: sqlite3.Connection, guild_id: int, type_: str, limit: int = 20):
+    cur = con.cursor()
+    cur.execute("""
+        SELECT user_id, count FROM leaderboard_totals
+        WHERE guild_id=? AND type=?
+        ORDER BY count DESC
+        LIMIT ?
+    """, (guild_id, type_, limit))
+    return [(row["user_id"], row["count"]) for row in cur.fetchall()]
+
+@with_db
+def agg_totals_all(con: sqlite3.Connection, guild_id: int) -> Tuple[int, int, int, int]:
+    cur = con.cursor()
+    cur.execute("""
+        SELECT SUM(CASE WHEN outcome='win'  THEN 1 ELSE 0 END),
+               SUM(CASE WHEN outcome='loss' THEN 1 ELSE 0 END),
+               SUM(CASE WHEN incomplete=1  THEN 1 ELSE 0 END),
+               COUNT(*)
+        FROM messages
+        WHERE guild_id=?
+    """, (guild_id,))
+    w,l,inc,tot = cur.fetchone()
+    return (w or 0, l or 0, inc or 0, tot or 0)
+
+@with_db
+def get_player_stats(con: sqlite3.Connection, guild_id: int, user_id: int) -> Tuple[int,int,int,int]:
+    cur = con.cursor()
+    cur.execute("""
+        SELECT COUNT(*) FROM participants p
+        JOIN messages m ON m.message_id=p.message_id
+        WHERE m.guild_id=? AND p.user_id=?
+    """, (guild_id, user_id))
+    defenses = cur.fetchone()[0] or 0
+
+    cur.execute("SELECT COUNT(*) FROM messages WHERE guild_id=? AND creator_id=?", (guild_id, user_id))
+    pings = cur.fetchone()[0] or 0
+
+    cur.execute("""
+        SELECT SUM(CASE WHEN m.outcome='win' THEN 1 ELSE 0 END),
+               SUM(CASE WHEN m.outcome='loss' THEN 1 ELSE 0 END)
+        FROM messages m
+        JOIN participants p ON m.message_id=p.message_id
+        WHERE m.guild_id=? AND p.user_id=?
+    """, (guild_id, user_id))
+    row = cur.fetchone()
+    wins = row[0] or 0
+    losses = row[1] or 0
+    return defenses, pings, wins, losses
