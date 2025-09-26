@@ -2,20 +2,25 @@ import os
 import discord
 from discord.ext import commands
 
-# On importe les fonctions DB et utilitaires depuis ton fichier commun (à ajuster selon ton organisation)
-from cogs.ping import (
+# Fonctions DB depuis storage.py
+from storage import (
     upsert_message,
     incr_leaderboard,
-    build_ping_embed,   # embed builder (on peut le laisser ici aussi si tu veux)
-    update_leaderboards
 )
+
+# Rafraîchissement des leaderboards
+from .leaderboard import update_leaderboards
+
+# Fonction embed (on la garde ici pour l’instant)
+from .embeds import build_ping_embed  # si tu veux isoler les embeds dans un fichier séparé
+
 
 # ---------- ENV ----------
 ALERT_CHANNEL_ID = int(os.getenv("ALERT_CHANNEL_ID", "0"))
 ROLE_DEF_ID = int(os.getenv("ROLE_DEF_ID", "0"))
 ROLE_DEF2_ID = int(os.getenv("ROLE_DEF2_ID", "0"))
 ROLE_TEST_ID = int(os.getenv("ROLE_TEST_ID", "0"))
-ADMIN_ROLE_ID = int(os.getenv("ADMIN_ROLE_ID", "0"))  # à ajuster
+ADMIN_ROLE_ID = int(os.getenv("ADMIN_ROLE_ID", "0"))
 
 
 # ---------- View boutons ----------
@@ -41,7 +46,13 @@ class PingButtonsView(discord.ui.View):
         content = f"{role_mention} — **Percepteur attaqué !** Merci de vous connecter." if role_mention else "**Percepteur attaqué !** Merci de vous connecter."
 
         msg = await alert_channel.send(content)
-        upsert_message(msg, creator_id=interaction.user.id)
+        upsert_message(
+            msg.id,
+            msg.guild.id,
+            msg.channel.id,
+            int(msg.created_at.timestamp()),
+            creator_id=interaction.user.id
+        )
         incr_leaderboard(interaction.guild.id, "pingeur", interaction.user.id)
         emb = await build_ping_embed(msg)
         try:
