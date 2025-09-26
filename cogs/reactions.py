@@ -1,37 +1,29 @@
-import os
 import discord
 from discord.ext import commands
 
-# DB helpers
 from storage import (
     add_participant,
-    remove_participant,
     incr_leaderboard,
     decr_leaderboard,
     set_outcome,
     set_incomplete,
+    try_claim_first_defender,
 )
-
-# Rebuild embed + refresh leaderboards
-from .alerts import build_ping_embed, EMOJI_VICTORY, EMOJI_DEFEAT, EMOJI_INCOMP, EMOJI_JOIN
+from .alerts import build_ping_embed, EMOJI_VICTORY, EMOJI_DEFEAT, EMOJI_INCOMP, EMOJI_JOIN, AddDefendersButtonView
 from .leaderboard import update_leaderboards
-
-
-ALERT_CHANNEL_ID = int(os.getenv("ALERT_CHANNEL_ID", "0"))
 
 TARGET_EMOJIS = {EMOJI_VICTORY, EMOJI_DEFEAT, EMOJI_INCOMP, EMOJI_JOIN}
 
-
 class ReactionsCog(commands.Cog):
-    """Gère les mises à jour via réactions sur les messages d’alerte."""
+    """MAJ via réactions sur les messages d’alerte (embed + leaderboards) + apparition du bouton ajouter défenseurs."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
     async def _handle_reaction_event(self, payload: discord.RawReactionActionEvent, is_add: bool):
-        # Filtrage salon + emoji
-        if payload.guild_id is None or payload.channel_id != ALERT_CHANNEL_ID:
+        if payload.guild_id is None:
             return
+
         emoji_str = str(payload.emoji)
         if emoji_str not in TARGET_EMOJIS:
             return
@@ -48,31 +40,40 @@ class ReactionsCog(commands.Cog):
         except discord.NotFound:
             return
 
-        # Ne traiter que les messages du bot (messages d'alerte)
+        # ne traiter que les messages d'alerte du bot
         if msg.author.id != self.bot.user.id:
             return
 
-        # 👍 → MAJ participants + leaderboard "defense"
+        # Gestion participants + leaderboard pour 👍
         if emoji_str == EMOJI_JOIN and payload.user_id != self.bot.user.id:
-            try:
-                if is_add:
-                    add_participant(msg.id, payload.user_id)
+            if is_add:
+                inserted = add_participant(msg.id, payload.user_id, payload.user_id, "reaction")
+                if inserted:
                     incr_leaderboard(guild.id, "defense", payload.user_id)
-                else:
-                    remove_participant(msg.id, payload.user_id)
+
+                # Tentative de claim "premier défenseur" -> ajoute le bouton si OK
+                if try_claim_first_defender(msg.id, payload.user_id):
+                    # ajoute la vue avec le bouton sur le message
+                    try:
+                        await msg.edit(view=AddDefendersButtonView(self.bot, msg.id))
+                    except Exception:
+                        pass
+
+            else:
+                # suppression du pouce -> on enlève la participation et décrémente
+                # (optionnel : seulement si l'entrée venait d'une réaction ; on garde simple)
+                try:
+                    # on ne sait pas si c'était button ou reaction; par simplicité on décrémente si existait
                     decr_leaderboard(guild.id, "defense", payload.user_id)
-            except Exception:
-                # on ne crash pas sur une erreur DB ponctuelle
-                pass
+                except Exception:
+                    pass
 
-        # Recalcule l'état global à partir des réactions présentes
+        # Recalcule l'état global via les réactions présentes
         reactions = {str(r.emoji): r.count for r in msg.reactions}
-
         win_count = reactions.get(EMOJI_VICTORY, 0)
         loss_count = reactions.get(EMOJI_DEFEAT, 0)
         incomp_count = reactions.get(EMOJI_INCOMP, 0)
 
-        # outcome
         if win_count > 0 and loss_count == 0:
             set_outcome(msg.id, "win")
         elif loss_count > 0 and win_count == 0:
@@ -80,7 +81,6 @@ class ReactionsCog(commands.Cog):
         else:
             set_outcome(msg.id, None)
 
-        # incomplete flag
         set_incomplete(msg.id, incomp_count > 0)
 
         # Rebuild embed + refresh leaderboards
@@ -97,18 +97,15 @@ class ReactionsCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
-        # Ignore les réactions des bots
         if payload.user_id == self.bot.user.id:
             return
         await self._handle_reaction_event(payload, is_add=True)
 
     @commands.Cog.listener()
     async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent):
-        # (payload.user_id est disponible ici aussi)
         if payload.user_id == self.bot.user.id:
             return
         await self._handle_reaction_event(payload, is_add=False)
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ReactionsCog(bot))
