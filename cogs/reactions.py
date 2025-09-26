@@ -20,7 +20,6 @@ from .leaderboard import update_leaderboards
 
 TARGET_EMOJIS = {EMOJI_VICTORY, EMOJI_DEFEAT, EMOJI_INCOMP, EMOJI_JOIN}
 
-
 class ReactionsCog(commands.Cog):
     """Gère les réactions sur les messages d'alerte : participants (👍), état (🏆/❌/😡), embed & leaderboards."""
 
@@ -53,7 +52,7 @@ class ReactionsCog(commands.Cog):
         if msg.author.id != self.bot.user.id:
             return
 
-        attach_add_defenders_view = False  # si True, on attachera la vue au prochain edit
+        attach_add_defenders_view = False
 
         # ----- Gestion du 👍 -----
         if emoji_str == EMOJI_JOIN and payload.user_id != self.bot.user.id:
@@ -61,7 +60,6 @@ class ReactionsCog(commands.Cog):
                 inserted = add_participant(msg.id, payload.user_id, payload.user_id, "reaction")
                 if inserted:
                     incr_leaderboard(guild.id, "defense", payload.user_id)
-
                 first_id = get_first_defender(msg.id)
                 if first_id == payload.user_id:
                     attach_add_defenders_view = True
@@ -115,7 +113,6 @@ class ReactionsCog(commands.Cog):
         if payload.user_id == self.bot.user.id:
             return
         await self._handle_reaction_event(payload, is_add=False)
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ReactionsCog(bot))
