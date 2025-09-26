@@ -240,7 +240,7 @@ class AlertsCog(commands.Cog):
 
     @app_commands.command(name="pingpanel", description="Publier le panneau d’alerte percepteur")
     async def pingpanel(self, interaction: discord.Interaction):
-        # ✅ Déférer d'abord pour éviter 10062
+        # Déférer d'abord pour éviter 10062
         try:
             await interaction.response.defer(ephemeral=False, thinking=False)
         except Exception:
