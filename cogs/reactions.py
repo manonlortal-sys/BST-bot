@@ -10,6 +10,7 @@ from storage import (
     set_outcome,
     set_incomplete,
     get_first_defender,
+    is_tracked_message,  # <= NOUVEAU
 )
 from .alerts import (
     build_ping_embed,
@@ -47,10 +48,11 @@ class ReactionsCog(commands.Cog):
         except discord.NotFound:
             return
 
-        # Ne traiter que les messages d'alerte envoyés par le bot
-        if msg.author.id != self.bot.user.id:
+        # ✅ Nouveau critère robuste : traiter seulement les messages d'alerte suivis en DB
+        if not is_tracked_message(msg.id):
             return
 
+        # Flag pour afficher le bouton après 1er 👍
         attach_add_defenders_view = False
 
         # ----- Gestion du 👍 -----
@@ -59,6 +61,7 @@ class ReactionsCog(commands.Cog):
                 inserted = add_participant(msg.id, payload.user_id, payload.user_id, "reaction")
                 if inserted:
                     incr_leaderboard(guild.id, "defense", payload.user_id)
+                # si c'est le premier défenseur, on affichera le bouton
                 first_id = get_first_defender(msg.id)
                 if first_id == payload.user_id:
                     attach_add_defenders_view = True
@@ -66,6 +69,7 @@ class ReactionsCog(commands.Cog):
                 entry = get_participant_entry(msg.id, payload.user_id)
                 if entry:
                     added_by, source, _ = entry
+                    # On ne retire que les participations ajoutées par réaction par l'utilisateur lui-même
                     if source == "reaction" and added_by == payload.user_id:
                         removed = remove_participant(msg.id, payload.user_id)
                         if removed:
@@ -89,7 +93,13 @@ class ReactionsCog(commands.Cog):
         # ----- Rebuild embed + leaderboards -----
         try:
             emb = await build_ping_embed(msg)
-            if attach_add_defenders_view:
+
+            # ✅ Le bouton “Ajouter défenseurs” doit être visible dès qu'un premier 👍 existe,
+            #    et rester visible ensuite (on ne l'enlève plus lors des edits).
+            first_id_now = get_first_defender(msg.id)
+            should_have_view = first_id_now is not None
+
+            if attach_add_defenders_view or should_have_view:
                 await msg.edit(embed=emb, view=AddDefendersButtonView(self.bot, msg.id))
             else:
                 await msg.edit(embed=emb)
@@ -114,4 +124,4 @@ class ReactionsCog(commands.Cog):
         await self._handle_reaction_event(payload, is_add=False)
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(ReactionsCog(bot))tionsCog(bot))
+    await bot.add_cog(ReactionsCog(bot))
