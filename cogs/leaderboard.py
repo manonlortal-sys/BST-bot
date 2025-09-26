@@ -13,7 +13,7 @@ from storage import (
 
 LEADERBOARD_CHANNEL_ID = int(os.getenv("LEADERBOARD_CHANNEL_ID", "0"))
 
-def medals_top_defenders(top: list[tuple[int,int]]) -> str:
+def medals_top_defenders(top: list[tuple[int, int]]) -> str:
     lines = []
     for i, (uid, cnt) in enumerate(top):
         if i == 0:
@@ -37,15 +37,16 @@ def fmt_stats_block(att: int, w: int, l: int, inc: int) -> str:
         f"📊 Ratio victoire : {ratio}"
     )
 
-def fmt_hourly_block(buckets: tuple[int,int,int,int], total: int) -> str:
+def fmt_hourly_block(buckets: tuple[int, int, int, int], total: int) -> str:
     m, a, s, n = buckets
-    def pct(x): return f"{(x/total*100):.1f}%" if total else "0%"
+    def pct(x: int) -> str:
+        return f"{(x/total*100):.1f}%" if total else "0%"
     return (
         f"\n"
-        f"🌅 Matin (6–10) : {m} ({pct(m)})\n"
-        f"🌞 Après-midi (10–18) : {a} ({pct(a)})\n"
-        f"🌙 Soir (18–00) : {s} ({pct(s)})\n"
-        f"🌌 Nuit (00–6) : {n} ({pct(n)})"
+        f"🌅 Matin : {m} ({pct(m)})\n"
+        f"🌞 Après-midi : {a} ({pct(a)})\n"
+        f"🌙 Soir : {s} ({pct(s)})\n"
+        f"🌌 Nuit : {n} ({pct(n)})"
     )
 
 async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
@@ -76,13 +77,13 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
     buckets = hourly_split_all(guild.id)
 
     embed_def = discord.Embed(title="📊 Leaderboard Défense", color=discord.Color.blue())
-    embed_def.add_field(name="🏅 Top défenseurs", value=top_block, inline=False)
+    embed_def.add_field(name="**🏅 Top défenseurs**", value=top_block, inline=False)
 
-    embed_def.add_field(name="📌 Stats globales", value=fmt_stats_block(att_all, w_all, l_all, inc_all), inline=False)
-    embed_def.add_field(name="📌 Stats Guilde 1", value=fmt_stats_block(att_g1, w_g1, l_g1, inc_g1), inline=False)
-    embed_def.add_field(name="📌 Stats Guilde 2", value=fmt_stats_block(att_g2, w_g2, l_g2, inc_g2), inline=False)
+    embed_def.add_field(name="**📌 Stats globales**", value=fmt_stats_block(att_all, w_all, l_all, inc_all), inline=False)
+    embed_def.add_field(name="**📌 Stats Guilde 1**", value=fmt_stats_block(att_g1, w_g1, l_g1, inc_g1), inline=False)
+    embed_def.add_field(name="**📌 Stats Guilde 2**", value=fmt_stats_block(att_g2, w_g2, l_g2, inc_g2), inline=False)
 
-    embed_def.add_field(name="🕒 Répartition horaire", value=fmt_hourly_block(buckets, att_all), inline=False)
+    embed_def.add_field(name="**🕒 Répartition horaire**", value=fmt_hourly_block(buckets, att_all), inline=False)
 
     await msg_def.edit(embed=embed_def)
 
@@ -99,9 +100,21 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
         set_leaderboard_post(guild.id, channel.id, msg_ping.id, "pingeur")
 
     top_ping = get_leaderboard_totals(guild.id, "pingeur")
-    ping_block = "\n".join([f"• <@{uid}> : {cnt} pings" for uid, cnt in top_ping]) or "_Aucun pingeur encore_"
+    # médailles aussi pour pingeurs (optionnel)
+    ping_lines = []
+    for i, (uid, cnt) in enumerate(top_ping):
+        if i == 0:
+            ping_lines.append(f"🥇 <@{uid}> : {cnt} pings")
+        elif i == 1:
+            ping_lines.append(f"🥈 <@{uid}> : {cnt} pings")
+        elif i == 2:
+            ping_lines.append(f"🥉 <@{uid}> : {cnt} pings")
+        else:
+            ping_lines.append(f"• <@{uid}> : {cnt} pings")
+    ping_block = "\n".join(ping_lines) if ping_lines else "_Aucun pingeur encore_"
+
     embed_ping = discord.Embed(title="📊 Leaderboard Pingeurs", color=discord.Color.gold())
-    embed_ping.add_field(name="🏅 Top pingeurs", value=ping_block, inline=False)
+    embed_ping.add_field(name="**🏅 Top pingeurs**", value=ping_block, inline=False)
     await msg_ping.edit(embed=embed_ping)
 
 
