@@ -15,14 +15,14 @@ from .leaderboard import update_leaderboards
 
 # ---------- ENV ----------
 ALERT_CHANNEL_ID = int(os.getenv("ALERT_CHANNEL_ID", "0"))
-ROLE_DEF_ID = int(os.getenv("ROLE_DEF_ID", "0"))
-ROLE_DEF2_ID = int(os.getenv("ROLE_DEF2_ID", "0"))
-ROLE_TEST_ID = int(os.getenv("ROLE_TEST_ID", "0"))
-ADMIN_ROLE_ID = int(os.getenv("ADMIN_ROLE_ID", "0"))
+ROLE_DEF_ID      = int(os.getenv("ROLE_DEF_ID", "0"))
+ROLE_DEF2_ID     = int(os.getenv("ROLE_DEF2_ID", "0"))
+ROLE_TEST_ID     = int(os.getenv("ROLE_TEST_ID", "0"))
+ADMIN_ROLE_ID    = int(os.getenv("ADMIN_ROLE_ID", "0"))
 
 # ---------- Emojis ----------
 EMOJI_VICTORY = "🏆"
-EMOJI_DEFEAT = "❌"
+EMOJI_DEFEAT  = "❌"
 EMOJI_INCOMP  = "😡"
 EMOJI_JOIN    = "👍"
 
@@ -45,24 +45,27 @@ async def build_ping_embed(msg: discord.Message) -> discord.Embed:
             lines.append(name)
     defenders_block = "• " + "\n• ".join(lines) if lines else "_Aucun défenseur pour le moment._"
 
-    # Etat du combat depuis réactions
+    # Etat du combat (d'après réactions)
     reactions = {str(r.emoji): r for r in msg.reactions}
-    win  = EMOJI_VICTORY in reactions and reactions[EMOJI_VICTORY].count > 0
-    loss = EMOJI_DEFEAT  in reactions and reactions[EMOJI_DEFEAT].count  > 0
-    incomplete = EMOJI_INCOMP in reactions and reactions[EMOJI_INCOMP].count > 0
+    win        = EMOJI_VICTORY in reactions and reactions[EMOJI_VICTORY].count > 0
+    loss       = EMOJI_DEFEAT  in reactions and reactions[EMOJI_DEFEAT].count  > 0
+    incomplete = EMOJI_INCOMP  in reactions and reactions[EMOJI_INCOMP].count  > 0
 
     if win and not loss:
         color = discord.Color.green()
         etat = f"{EMOJI_VICTORY} **Défense gagnée**"
-        if incomplete: etat += f"\n{EMOJI_INCOMP} Défense incomplète"
+        if incomplete:
+            etat += f"\n{EMOJI_INCOMP} Défense incomplète"
     elif loss and not win:
         color = discord.Color.red()
         etat = f"{EMOJI_DEFEAT} **Défense perdue**"
-        if incomplete: etat += f"\n{EMOJI_INCOMP} Défense incomplète"
+        if incomplete:
+            etat += f"\n{EMOJI_INCOMP} Défense incomplète"
     else:
         color = discord.Color.orange()
         etat = "⏳ **En cours**"
-        if incomplete: etat += f"\n{EMOJI_INCOMP} Défense incomplète"
+        if incomplete:
+            etat += f"\n{EMOJI_INCOMP} Défense incomplète"
 
     embed = discord.Embed(
         title="🛡️ Alerte Attaque Percepteur",
@@ -94,12 +97,13 @@ class AddDefendersSelectView(discord.ui.View):
         placeholder="Sélectionne jusqu'à 3 défenseurs",
     )
     async def user_select(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
+        # Stocke la sélection, accuse réception rapidement (évite timeout)
         self.selected_users = select.values
         await interaction.response.defer(ephemeral=True)
 
     @discord.ui.button(label="Confirmer l'ajout", style=discord.ButtonStyle.success, emoji="✅")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Evite le timeout "Interaction failed"
+        # Déférer pour éviter "Interaction failed"
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         if interaction.user.id != self.claimer_id:
@@ -111,7 +115,12 @@ class AddDefendersSelectView(discord.ui.View):
             return
 
         guild = interaction.guild
-        channel = guild.get_channel(interaction.channel_id)
+        # ✅ supporte salon OU thread
+        channel = guild.get_channel(interaction.channel_id) or guild.get_thread(interaction.channel_id)
+        if channel is None:
+            await interaction.followup.send("Impossible de retrouver le message d'alerte.", ephemeral=True)
+            return
+
         msg = await channel.fetch_message(self.message_id)
 
         added_any = False
@@ -171,12 +180,20 @@ class PingButtonsView(discord.ui.View):
         guild = interaction.guild
         if guild is None or ALERT_CHANNEL_ID == 0:
             return
+
         alert_channel = guild.get_channel(ALERT_CHANNEL_ID)
-        if not isinstance(alert_channel, discord.TextChannel):
-            return
+        if not isinstance(alert_channel, (discord.TextChannel, discord.Thread)):
+            # si l'ID pointe vers un thread, on peut aussi tenter:
+            alert_channel = guild.get_thread(ALERT_CHANNEL_ID)
+            if alert_channel is None:
+                return
 
         role_mention = f"<@&{role_id}>" if role_id else ""
-        content = f"{role_mention} — **Percepteur attaqué !** Merci de vous connecter." if role_mention else "**Percepteur attaqué !** Merci de vous connecter."
+        content = (
+            f"{role_mention} — **Percepteur attaqué !** Merci de vous connecter."
+            if role_mention else
+            "**Percepteur attaqué !** Merci de vous connecter."
+        )
 
         msg = await alert_channel.send(content)
         upsert_message(
