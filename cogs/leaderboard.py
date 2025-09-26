@@ -71,11 +71,8 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
     top_block = medals_top_defenders(top_def)
 
     w_all, l_all, inc_all, att_all = agg_totals_all(guild.id)
-
-    # par Guilde
     w_g1, l_g1, inc_g1, att_g1 = agg_totals_by_team(guild.id, 1)
     w_g2, l_g2, inc_g2, att_g2 = agg_totals_by_team(guild.id, 2)
-
     buckets = hourly_split_all(guild.id)
 
     embed_def = discord.Embed(title="📊 Leaderboard Défense", color=discord.Color.blue())
@@ -104,7 +101,7 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
     top_ping = get_leaderboard_totals(guild.id, "pingeur")
     ping_block = "\n".join([f"• <@{uid}> : {cnt} pings" for uid, cnt in top_ping]) or "_Aucun pingeur encore_"
     embed_ping = discord.Embed(title="📊 Leaderboard Pingeurs", color=discord.Color.gold())
-    embed_ping.add_field(name="Top pingeurs", value=ping_block, inline=False)
+    embed_ping.add_field(name="🏅 Top pingeurs", value=ping_block, inline=False)
     await msg_ping.edit(embed=embed_ping)
 
 
