@@ -4,7 +4,7 @@ from flask import Flask
 import discord
 from discord.ext import commands
 
-# === Flask keep-alive (Render) ===
+# ========= Flask keep-alive =========
 app = Flask(__name__)
 
 @app.get("/")
@@ -17,7 +17,7 @@ def run_flask():
 
 threading.Thread(target=run_flask, daemon=True).start()
 
-# === Discord setup ===
+# ========= Discord setup =========
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 if not DISCORD_TOKEN:
     raise SystemExit("Missing DISCORD_TOKEN environment variable.")
@@ -36,15 +36,15 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 async def setup_hook():
     print("🚀 setup_hook démarré")
 
-    # Charger les cogs (⚠️ ne pas charger cogs.panel)
-    for ext in ["cogs.alerts", "cogs.reactions", "cogs.leaderboard", "cogs.stats"]:
+    # Charger les cogs
+    for ext in ["cogs.alerts", "cogs.reactions", "cogs.leaderboard", "cogs.stats", "cogs.snapshots"]:
         try:
             await bot.load_extension(ext)
             print(f"✅ {ext} chargé")
         except Exception as e:
             print(f"❌ Erreur chargement {ext} :", e)
 
-    # Ré-enregistrer la View persistante du panneau pour les messages déjà postés
+    # View persistante pour les anciens panneaux postés
     try:
         from cogs.alerts import PingButtonsView
         bot.add_view(PingButtonsView(bot))
@@ -67,13 +67,13 @@ async def on_ready():
         channel = bot.get_channel(LEADERBOARD_CHANNEL_ID)
         if channel:
             try:
-                messages = []
+                # Juste un message d'initialisation si rien
                 async for m in channel.history(limit=10):
-                    messages.append(m)
-                if not any("Leaderboard" in (m.content or "") for m in messages):
+                    break
+                else:
                     await channel.send("📊 **Leaderboard initialisé**")
             except Exception as e:
-                print("❌ Erreur création message leaderboard :", e)
+                print("❌ Erreur init leaderboard :", e)
 
 if __name__ == "__main__":
     print("⚡ Démarrage du bot...")
