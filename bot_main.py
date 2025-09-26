@@ -44,15 +44,10 @@ async def setup_hook():
         except Exception as e:
             print(f"❌ Erreur chargement {cog} :", e)
 
-    # Synchronisation des slash commands
+    # Synchronisation des slash commands (globale)
     try:
-        TEST_GUILD_ID = int(os.getenv("TEST_GUILD_ID", "0"))
-        if TEST_GUILD_ID:
-            await bot.tree.sync(guild=discord.Object(id=TEST_GUILD_ID))
-            print("✅ Slash commands synced to guild", TEST_GUILD_ID)
-        else:
-            await bot.tree.sync()
-            print("✅ Global slash commands sync (may take up to 1 hour to appear)")
+        await bot.tree.sync()
+        print("✅ Global slash commands sync (may take up to 1 hour to appear)")
     except Exception as e:
         print("❌ Slash sync error :", e)
 
