@@ -77,6 +77,7 @@ async def on_ready():
 
 if __name__ == "__main__":
     print("⚡ Démarrage du bot...")
+    # Init DB
     try:
         from storage import create_db
         create_db()
