@@ -22,12 +22,15 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 if not DISCORD_TOKEN:
     raise SystemExit("Missing DISCORD_TOKEN environment variable.")
 
+LEADERBOARD_CHANNEL_ID = int(os.getenv("LEADERBOARD_CHANNEL_ID", "0"))
+
 # ---------- Intents ----------
 intents = discord.Intents.default()
 intents.guilds = True
 intents.members = True
 intents.messages = True
 intents.reactions = True
+# message_content pas nécessaire pour ton bot
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -37,17 +40,17 @@ async def setup_hook():
     print("🚀 setup_hook démarré")
 
     # Charger les cogs
-    for cog in ["cogs.panel", "cogs.alerts", "cogs.leaderboard"]:
+    for ext in ["cogs.panel", "cogs.alerts", "cogs.leaderboard", "cogs.reactions"]:
         try:
-            await bot.load_extension(cog)
-            print(f"✅ {cog} chargé")
+            await bot.load_extension(ext)
+            print(f"✅ {ext} chargé")
         except Exception as e:
-            print(f"❌ Erreur chargement {cog} :", e)
+            print(f"❌ Erreur chargement {ext} :", e)
 
-    # Synchronisation des slash commands (globale)
+    # Sync global des slashs
     try:
         await bot.tree.sync()
-        print("✅ Global slash commands sync (may take up to 1 hour to appear)")
+        print("✅ Slash commands sync (global)")
     except Exception as e:
         print("❌ Slash sync error :", e)
 
@@ -55,11 +58,19 @@ async def setup_hook():
 async def on_ready():
     print(f"✅ Connecté en tant que {bot.user} (ID: {bot.user.id})")
 
+    if LEADERBOARD_CHANNEL_ID:
+        channel = bot.get_channel(LEADERBOARD_CHANNEL_ID)
+        if channel:
+            try:
+                messages = []
+                async for m in channel.history(limit=10):
+                    messages.append(m)
+
+                if not any("Leaderboard" in (m.content or "") for m in messages):
+                    await channel.send("📊 **Leaderboard initialisé**")
+            except Exception as e:
+                print("❌ Erreur création message leaderboard :", e)
+
 if __name__ == "__main__":
     print("⚡ Démarrage du bot...")
-
-    # Initialisation DB avant lancement du bot
-    from storage import create_db
-    create_db()
-
     bot.run(DISCORD_TOKEN)
