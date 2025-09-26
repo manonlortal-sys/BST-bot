@@ -299,7 +299,11 @@ def agg_totals_by_team(con: sqlite3.Connection, guild_id: int, team: int) -> Tup
         get_aggregate(guild_id, scope, "incomplete"),
         att,
     )
-
+@with_db
+def is_tracked_message(con: sqlite3.Connection, message_id: int) -> bool:
+    row = con.execute("SELECT 1 FROM messages WHERE message_id=?", (message_id,)).fetchone()
+    return row is not None
+    
 @with_db
 def hourly_split_all(con: sqlite3.Connection, guild_id: int) -> tuple[int, int, int, int]:
     rows = con.execute("SELECT created_ts FROM messages WHERE guild_id=?", (guild_id,)).fetchall()
