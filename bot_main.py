@@ -52,7 +52,7 @@ async def setup_hook():
     except Exception as e:
         print("❌ Erreur enregistrement View PingButtonsView :", e)
 
-    # Sync global des slashs
+    # Sync globale (peut prendre du temps à apparaître côté Discord)
     try:
         await bot.tree.sync()
         print("✅ Slash commands sync (global)")
@@ -70,6 +70,16 @@ async def on_ready():
         print("✅ Slash commands synced per guild")
     except Exception as e:
         print("❌ Per-guild slash sync error:", e)
+
+    # (optionnel) Logs pour vérifier ce que Discord voit réellement
+    try:
+        cmds = [c.name for c in bot.tree.get_commands()]
+        print("🌲 Global commands:", cmds)
+        for g in bot.guilds:
+            gcmds = [c.name for c in bot.tree.get_commands(guild=discord.Object(id=g.id))]
+            print(f"🌲 Guild {g.id} commands:", gcmds)
+    except Exception as e:
+        print("🌲 Unable to list commands:", e)
 
     if LEADERBOARD_CHANNEL_ID:
         channel = bot.get_channel(LEADERBOARD_CHANNEL_ID)
