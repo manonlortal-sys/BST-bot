@@ -4,18 +4,21 @@ from discord.ext import commands
 from storage import (
     add_participant,
     incr_leaderboard,
-    decr_leaderboard,
     set_outcome,
     set_incomplete,
-    try_claim_first_defender,
+    get_first_defender,
 )
-from .alerts import build_ping_embed, EMOJI_VICTORY, EMOJI_DEFEAT, EMOJI_INCOMP, EMOJI_JOIN, AddDefendersButtonView
+from .alerts import (
+    build_ping_embed,
+    EMOJI_VICTORY, EMOJI_DEFEAT, EMOJI_INCOMP, EMOJI_JOIN,
+    AddDefendersButtonView,
+)
 from .leaderboard import update_leaderboards
 
 TARGET_EMOJIS = {EMOJI_VICTORY, EMOJI_DEFEAT, EMOJI_INCOMP, EMOJI_JOIN}
 
 class ReactionsCog(commands.Cog):
-    """MAJ via réactions sur les messages d’alerte (embed + leaderboards) + apparition du bouton ajouter défenseurs."""
+    """MAJ via réactions sur les alertes (embed + leaderboards) + apparition du bouton 'Ajouter défenseurs' après 1er 👍."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -40,7 +43,7 @@ class ReactionsCog(commands.Cog):
         except discord.NotFound:
             return
 
-        # ne traiter que les messages d'alerte du bot
+        # Ne traiter que les messages du bot (alertes)
         if msg.author.id != self.bot.user.id:
             return
 
@@ -51,28 +54,23 @@ class ReactionsCog(commands.Cog):
                 if inserted:
                     incr_leaderboard(guild.id, "defense", payload.user_id)
 
-                # Tentative de claim "premier défenseur" -> ajoute le bouton si OK
-                if try_claim_first_defender(msg.id, payload.user_id):
-                    # ajoute la vue avec le bouton sur le message
+                # Si c'est le 1er défenseur, ajoute le bouton "Ajouter défenseurs"
+                first_id = get_first_defender(msg.id)
+                if first_id == payload.user_id:
                     try:
                         await msg.edit(view=AddDefendersButtonView(self.bot, msg.id))
                     except Exception:
                         pass
 
             else:
-                # suppression du pouce -> on enlève la participation et décrémente
-                # (optionnel : seulement si l'entrée venait d'une réaction ; on garde simple)
-                try:
-                    # on ne sait pas si c'était button ou reaction; par simplicité on décrémente si existait
-                    decr_leaderboard(guild.id, "defense", payload.user_id)
-                except Exception:
-                    pass
+                # Option: si tu veux gérer le retrait du pouce -> à implémenter avec remove_participant + decr_leaderboard
+                pass
 
-        # Recalcule l'état global via les réactions présentes
+        # Recalcule l'état global via les réactions présentes (win/loss/incomplete)
         reactions = {str(r.emoji): r.count for r in msg.reactions}
-        win_count = reactions.get(EMOJI_VICTORY, 0)
-        loss_count = reactions.get(EMOJI_DEFEAT, 0)
-        incomp_count = reactions.get(EMOJI_INCOMP, 0)
+        win_count  = reactions.get(EMOJI_VICTORY, 0)
+        loss_count = reactions.get(EMOJI_DEFEAT,  0)
+        inc_count  = reactions.get(EMOJI_INCOMP,  0)
 
         if win_count > 0 and loss_count == 0:
             set_outcome(msg.id, "win")
@@ -81,7 +79,7 @@ class ReactionsCog(commands.Cog):
         else:
             set_outcome(msg.id, None)
 
-        set_incomplete(msg.id, incomp_count > 0)
+        set_incomplete(msg.id, inc_count > 0)
 
         # Rebuild embed + refresh leaderboards
         try:
@@ -106,6 +104,7 @@ class ReactionsCog(commands.Cog):
         if payload.user_id == self.bot.user.id:
             return
         await self._handle_reaction_event(payload, is_add=False)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ReactionsCog(bot))
