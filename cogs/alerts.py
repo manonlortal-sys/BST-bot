@@ -146,15 +146,17 @@ class AddDefendersSelectView(discord.ui.View):
         self.stop()
 
 
-# ---------- View: bouton "Ajouter défenseurs" (ajouté après 1er 👍) ----------
+# ---------- View: bouton "Ajouter défenseurs" (après 1er 👍) ----------
 class AddDefendersButtonView(discord.ui.View):
     def __init__(self, bot: commands.Bot, message_id: int):
-        super().__init__(timeout=None)  # persistante
+        # ⏱️ timeout fini (2h) pour éviter persistance problématique après redeploy
+        super().__init__(timeout=7200)
         self.bot = bot
         self.message_id = message_id
 
     @discord.ui.button(label="Ajouter défenseurs", style=discord.ButtonStyle.primary, emoji="🛡️", custom_id="add_defenders")
     async def add_defenders(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from storage import get_first_defender  # import local pour éviter cycle
         first_id = get_first_defender(self.message_id)
         if first_id is None or interaction.user.id != first_id:
             await interaction.response.send_message("Bouton réservé au premier défenseur (premier 👍).", ephemeral=True)
@@ -169,7 +171,7 @@ class AddDefendersButtonView(discord.ui.View):
 # ---------- View boutons du panneau ----------
 class PingButtonsView(discord.ui.View):
     def __init__(self, bot: commands.Bot):
-        super().__init__(timeout=None)  # persistante
+        super().__init__(timeout=None)  # persistante (on la re-enregistre au boot)
         self.bot = bot
 
     async def _handle_click(self, interaction: discord.Interaction, role_id: int):
@@ -195,6 +197,7 @@ class PingButtonsView(discord.ui.View):
         )
 
         msg = await alert_channel.send(content)
+
         # Enregistre le créateur de l'alerte (pour "Déclenché par")
         upsert_message(
             msg.id,
@@ -203,6 +206,11 @@ class PingButtonsView(discord.ui.View):
             int(msg.created_at.timestamp()),
             creator_id=interaction.user.id,
         )
+        # ✅ Incrémente le leaderboard "pingeur"
+        try:
+            incr_leaderboard(guild.id, "pingeur", interaction.user.id)
+        except Exception:
+            pass
 
         emb = await build_ping_embed(msg)
         try:
