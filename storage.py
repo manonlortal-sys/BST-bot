@@ -39,7 +39,8 @@ def create_db():
             outcome TEXT,
             incomplete INTEGER,
             last_ts INTEGER NOT NULL,
-            creator_id INTEGER
+            creator_id INTEGER,
+            team INTEGER
         )
     """)
     # participants détaillés
@@ -85,7 +86,7 @@ def create_db():
     """)
     con.commit()
 
-    # Migration : colonne team
+    # Migrations légères (si ancien schéma)
     try:
         if not _column_exists(con, "messages", "team"):
             cur.execute("ALTER TABLE messages ADD COLUMN team INTEGER")
@@ -114,6 +115,11 @@ def upsert_message(
     """, (message_id, guild_id, channel_id, created_ts, utcnow_i(), creator_id, team))
     if team is not None:
         cur.execute("UPDATE messages SET team=?, last_ts=? WHERE message_id=?", (team, utcnow_i(), message_id))
+
+@with_db
+def is_tracked_message(con: sqlite3.Connection, message_id: int) -> bool:
+    row = con.execute("SELECT 1 FROM messages WHERE message_id=?", (message_id,)).fetchone()
+    return row is not None
 
 @with_db
 def get_message_creator(con: sqlite3.Connection, message_id: int) -> Optional[int]:
@@ -245,7 +251,6 @@ def seed_aggregates(con: sqlite3.Connection, guild_id: int, global_tot: dict, te
 
 @with_db
 def seed_leaderboard_totals(con: sqlite3.Connection, guild_id: int, type_: str, totals: Dict[int, int]):
-    # Reset puis insert
     con.execute("DELETE FROM leaderboard_totals WHERE guild_id=? AND type=?", (guild_id, type_))
     for uid, cnt in totals.items():
         con.execute("""
@@ -299,11 +304,7 @@ def agg_totals_by_team(con: sqlite3.Connection, guild_id: int, team: int) -> Tup
         get_aggregate(guild_id, scope, "incomplete"),
         att,
     )
-@with_db
-def is_tracked_message(con: sqlite3.Connection, message_id: int) -> bool:
-    row = con.execute("SELECT 1 FROM messages WHERE message_id=?", (message_id,)).fetchone()
-    return row is not None
-    
+
 @with_db
 def hourly_split_all(con: sqlite3.Connection, guild_id: int) -> tuple[int, int, int, int]:
     rows = con.execute("SELECT created_ts FROM messages WHERE guild_id=?", (guild_id,)).fetchall()
@@ -328,3 +329,79 @@ def hourly_split_all(con: sqlite3.Connection, guild_id: int) -> tuple[int, int, 
         get_aggregate(guild_id, "hourly", "evening"),
         get_aggregate(guild_id, "hourly", "night"),
     )
+
+# ---------- Stats joueur ----------
+@with_db
+def get_player_stats(con: sqlite3.Connection, guild_id: int, user_id: int) -> Tuple[int, int, int, int]:
+    # Défenses prises
+    row = con.execute("""
+        SELECT COUNT(*) AS c
+        FROM participants p
+        JOIN messages m ON m.message_id = p.message_id
+        WHERE m.guild_id = ? AND p.user_id = ?
+    """, (guild_id, user_id)).fetchone()
+    defenses = int(row["c"] or 0)
+
+    # Pings faits
+    row = con.execute("""
+        SELECT COUNT(*) AS c
+        FROM messages
+        WHERE guild_id = ? AND creator_id = ?
+    """, (guild_id, user_id)).fetchone()
+    pings = int(row["c"] or 0)
+
+    # Victoires / Défaites (sur les messages où le joueur a participé)
+    row = con.execute("""
+        SELECT
+            SUM(CASE WHEN m.outcome = 'win'  THEN 1 ELSE 0 END) AS w,
+            SUM(CASE WHEN m.outcome = 'loss' THEN 1 ELSE 0 END) AS l
+        FROM messages m
+        JOIN participants p ON m.message_id = p.message_id
+        WHERE m.guild_id = ? AND p.user_id = ?
+    """, (guild_id, user_id)).fetchone()
+    wins   = int((row["w"] or 0))
+    losses = int((row["l"] or 0))
+
+    return defenses, pings, wins, losses
+
+@with_db
+def get_player_recent_defenses(con: sqlite3.Connection, guild_id: int, user_id: int, limit: int = 3) -> List[Tuple[int, Optional[str]]]:
+    """
+    Retourne les dernières défenses prises par le joueur: liste de (created_ts, outcome)
+    outcome ∈ {'win','loss', None}
+    """
+    rows = con.execute("""
+        SELECT m.created_ts, m.outcome
+        FROM messages m
+        JOIN participants p ON m.message_id = p.message_id
+        WHERE m.guild_id = ? AND p.user_id = ?
+        ORDER BY m.created_ts DESC
+        LIMIT ?
+    """, (guild_id, user_id, limit)).fetchall()
+    return [(int(r["created_ts"]), r["outcome"]) for r in rows]
+
+@with_db
+def get_player_hourly_counts(con: sqlite3.Connection, guild_id: int, user_id: int) -> Tuple[int, int, int, int]:
+    """
+    Retourne (morning, afternoon, evening, night) pour les DEFENSES du joueur.
+    """
+    rows = con.execute("""
+        SELECT m.created_ts
+        FROM messages m
+        JOIN participants p ON m.message_id = p.message_id
+        WHERE m.guild_id = ? AND p.user_id = ?
+    """, (guild_id, user_id)).fetchall()
+    counts = [0, 0, 0, 0]
+    for r in rows:
+        ts = int(r["created_ts"])
+        dt_paris = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(ZoneInfo("Europe/Paris"))
+        h = dt_paris.hour
+        if 6 <= h < 10:
+            counts[0] += 1
+        elif 10 <= h < 18:
+            counts[1] += 1
+        elif 18 <= h < 24:
+            counts[2] += 1
+        else:
+            counts[3] += 1
+    return tuple(counts)
