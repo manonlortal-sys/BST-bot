@@ -3,8 +3,8 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 
-# On importe les fonctions DB depuis ton fichier commun (ex. cogs.ping ou storage.py)
-from cogs.ping import (
+# Fonctions DB depuis storage.py
+from storage import (
     get_leaderboard_post,
     set_leaderboard_post,
     get_leaderboard_totals,
