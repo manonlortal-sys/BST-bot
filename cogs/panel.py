@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 
-# On importe la View depuis alerts (elle sera définie là-bas)
+# La View est définie dans alerts.py
 from .alerts import PingButtonsView
 
 
@@ -11,7 +11,7 @@ class PanelCog(commands.Cog):
         self.bot = bot
 
     async def cog_load(self):
-        # Important : on ré-enregistre la View persistante à chaque redémarrage
+        # Ré-attacher la View persistante au redémarrage
         self.bot.add_view(PingButtonsView(self.bot))
 
     @app_commands.command(
@@ -25,7 +25,6 @@ class PanelCog(commands.Cog):
             description="Cliquez sur les boutons ci-dessous pour déclencher une alerte.",
             color=discord.Color.blue()
         )
-
         await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
 
 
