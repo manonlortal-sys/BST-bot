@@ -38,7 +38,6 @@ class ReactionsCog(commands.Cog):
         if guild is None:
             return
 
-        # Supporte TextChannel ET Thread
         channel = guild.get_channel(payload.channel_id) or guild.get_thread(payload.channel_id)
         if channel is None:
             return
@@ -115,4 +114,4 @@ class ReactionsCog(commands.Cog):
         await self._handle_reaction_event(payload, is_add=False)
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(ReactionsCog(bot))
+    await bot.add_cog(ReactionsCog(bot))tionsCog(bot))
