@@ -35,8 +35,10 @@ class ReactionsCog(commands.Cog):
         guild = self.bot.get_guild(payload.guild_id)
         if guild is None:
             return
-        channel = guild.get_channel(payload.channel_id)
-        if not isinstance(channel, discord.TextChannel):
+
+        # ✅ Accepte TextChannel OU Thread
+        channel = guild.get_channel(payload.channel_id) or guild.get_thread(payload.channel_id)
+        if channel is None:
             return
 
         try:
@@ -44,8 +46,11 @@ class ReactionsCog(commands.Cog):
         except discord.NotFound:
             return
 
+        # Ne traiter que les messages d'alerte du bot
         if msg.author.id != self.bot.user.id:
             return
+
+        attach_add_defenders_view = False  # on attachera la vue dans l'edit final si nécessaire
 
         # 👍 participation
         if emoji_str == EMOJI_JOIN and payload.user_id != self.bot.user.id:
@@ -54,15 +59,12 @@ class ReactionsCog(commands.Cog):
                 if inserted:
                     incr_leaderboard(guild.id, "defense", payload.user_id)
 
-                # si c'est le premier défenseur → afficher le bouton "Ajouter défenseurs"
+                # Si c'est le premier défenseur -> on affichera le bouton
                 first_id = get_first_defender(msg.id)
                 if first_id == payload.user_id:
-                    try:
-                        await msg.edit(view=AddDefendersButtonView(self.bot, msg.id))
-                    except Exception:
-                        pass
+                    attach_add_defenders_view = True
             else:
-                # Retrait du 👍 : ne retirer que si l'entrée vient d'une réaction par la même personne
+                # Retrait du 👍 : retirer seulement si l'entrée venait d'une réaction par ce user
                 entry = get_participant_entry(msg.id, payload.user_id)
                 if entry:
                     added_by, source, _ = entry
@@ -71,7 +73,7 @@ class ReactionsCog(commands.Cog):
                         if removed:
                             decr_leaderboard(guild.id, "defense", payload.user_id)
 
-        # Recalcule état (🏆 ❌ 😡 + neutralisation si mixte)
+        # Recalcule l'état global via les réactions présentes
         reactions = {str(r.emoji): r.count for r in msg.reactions}
         win_count  = reactions.get(EMOJI_VICTORY, 0)
         loss_count = reactions.get(EMOJI_DEFEAT,  0)
@@ -86,10 +88,13 @@ class ReactionsCog(commands.Cog):
 
         set_incomplete(msg.id, inc_count > 0)
 
-        # Refresh embed + leaderboards
+        # Rebuild embed + refresh leaderboards (et attacher la vue si nécessaire)
         try:
             emb = await build_ping_embed(msg)
-            await msg.edit(embed=emb)
+            if attach_add_defenders_view:
+                await msg.edit(embed=emb, view=AddDefendersButtonView(self.bot, msg.id))
+            else:
+                await msg.edit(embed=emb)
         except Exception:
             pass
 
