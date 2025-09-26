@@ -2,6 +2,7 @@ import os
 from typing import List, Optional
 import discord
 from discord.ext import commands
+from discord import app_commands
 
 from storage import (
     upsert_message,
@@ -115,7 +116,7 @@ class AddDefendersSelectView(discord.ui.View):
             return
 
         guild = interaction.guild
-        # ✅ supporte salon OU thread
+        # supporte salon OU thread
         channel = guild.get_channel(interaction.channel_id) or guild.get_thread(interaction.channel_id)
         if channel is None:
             await interaction.followup.send("Impossible de retrouver le message d'alerte.", ephemeral=True)
@@ -148,7 +149,7 @@ class AddDefendersSelectView(discord.ui.View):
 # ---------- View: bouton "Ajouter défenseurs" (ajouté après 1er 👍) ----------
 class AddDefendersButtonView(discord.ui.View):
     def __init__(self, bot: commands.Bot, message_id: int):
-        super().__init__(timeout=None)
+        super().__init__(timeout=None)  # persistante
         self.bot = bot
         self.message_id = message_id
 
@@ -168,7 +169,7 @@ class AddDefendersButtonView(discord.ui.View):
 # ---------- View boutons du panneau ----------
 class PingButtonsView(discord.ui.View):
     def __init__(self, bot: commands.Bot):
-        super().__init__(timeout=None)
+        super().__init__(timeout=None)  # persistante
         self.bot = bot
 
     async def _handle_click(self, interaction: discord.Interaction, role_id: int):
@@ -181,12 +182,10 @@ class PingButtonsView(discord.ui.View):
         if guild is None or ALERT_CHANNEL_ID == 0:
             return
 
-        alert_channel = guild.get_channel(ALERT_CHANNEL_ID)
-        if not isinstance(alert_channel, (discord.TextChannel, discord.Thread)):
-            # si l'ID pointe vers un thread, on peut aussi tenter:
-            alert_channel = guild.get_thread(ALERT_CHANNEL_ID)
-            if alert_channel is None:
-                return
+        # Salon ou thread cible
+        alert_channel = guild.get_channel(ALERT_CHANNEL_ID) or guild.get_thread(ALERT_CHANNEL_ID)
+        if alert_channel is None:
+            return
 
         role_mention = f"<@&{role_id}>" if role_id else ""
         content = (
@@ -196,6 +195,7 @@ class PingButtonsView(discord.ui.View):
         )
 
         msg = await alert_channel.send(content)
+        # Enregistre le créateur de l'alerte (pour "Déclenché par")
         upsert_message(
             msg.id,
             msg.guild.id,
@@ -236,6 +236,15 @@ class PingButtonsView(discord.ui.View):
 class AlertsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    # ✅ commande pour publier/re-publier un panneau d'alerte
+    @app_commands.command(name="pingpanel", description="Publier le panneau d’alerte percepteur")
+    async def pingpanel(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            "Panneau prêt :",
+            view=PingButtonsView(self.bot),
+            ephemeral=False
+        )
 
 
 async def setup(bot: commands.Bot):
