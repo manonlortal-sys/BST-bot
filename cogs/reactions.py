@@ -28,7 +28,6 @@ class ReactionsCog(commands.Cog):
         self.bot = bot
 
     async def _handle_reaction_event(self, payload: discord.RawReactionActionEvent, is_add: bool):
-        # DMs et guilds None -> on ignore
         if payload.guild_id is None:
             return
 
@@ -40,7 +39,7 @@ class ReactionsCog(commands.Cog):
         if guild is None:
             return
 
-        # ✅ Supporte TextChannel ET Thread
+        # Supporte TextChannel ET Thread
         channel = guild.get_channel(payload.channel_id) or guild.get_thread(payload.channel_id)
         if channel is None:
             return
@@ -50,26 +49,23 @@ class ReactionsCog(commands.Cog):
         except discord.NotFound:
             return
 
-        # On ne traite que les messages d'alerte envoyés par le bot
+        # Ne traiter que les messages d'alerte envoyés par le bot
         if msg.author.id != self.bot.user.id:
             return
 
         attach_add_defenders_view = False  # si True, on attachera la vue au prochain edit
 
-        # ----- Gestion du 👍 (participation) -----
+        # ----- Gestion du 👍 -----
         if emoji_str == EMOJI_JOIN and payload.user_id != self.bot.user.id:
             if is_add:
-                # Ajout : on enregistre la participation (source="reaction"), incrément si insertion réelle
                 inserted = add_participant(msg.id, payload.user_id, payload.user_id, "reaction")
                 if inserted:
                     incr_leaderboard(guild.id, "defense", payload.user_id)
 
-                # Si c'est le premier défenseur, on affichera le bouton "Ajouter défenseurs"
                 first_id = get_first_defender(msg.id)
                 if first_id == payload.user_id:
                     attach_add_defenders_view = True
             else:
-                # Retrait : on ne retire que si l'entrée vient d'une réaction de ce user
                 entry = get_participant_entry(msg.id, payload.user_id)
                 if entry:
                     added_by, source, _ = entry
