@@ -426,3 +426,28 @@ def get_player_hourly_counts(con: sqlite3.Connection, guild_id: int, user_id: in
         else:
             counts[3] += 1
     return tuple(counts)
+
+# ---------- Helpers pour suppression d'alerte (AJOUTS MINIMAUX) ----------
+@with_db
+def get_message_info(con: sqlite3.Connection, message_id: int) -> Optional[Tuple[int, Optional[int]]]:
+    """Retourne (guild_id, creator_id) pour un message suivi, ou None si inconnu."""
+    row = con.execute("""
+        SELECT guild_id, creator_id
+        FROM messages
+        WHERE message_id=?
+    """, (message_id,)).fetchone()
+    if not row:
+        return None
+    return int(row["guild_id"]), (int(row["creator_id"]) if row["creator_id"] is not None else None)
+
+@with_db
+def get_participants_ids(con: sqlite3.Connection, message_id: int) -> List[int]:
+    rows = con.execute("""
+        SELECT user_id FROM participants WHERE message_id=?
+    """, (message_id,)).fetchall()
+    return [int(r["user_id"]) for r in rows]
+
+@with_db
+def delete_message_cascade(con: sqlite3.Connection, message_id: int):
+    con.execute("DELETE FROM participants WHERE message_id=?", (message_id,))
+    con.execute("DELETE FROM messages WHERE message_id=?", (message_id,))
