@@ -1,3 +1,4 @@
+(AlertsCog(bot))
 # cogs/alerts.py
 import os
 from typing import List, Optional
@@ -12,8 +13,8 @@ from storage import (
     get_participants_detailed,
     get_first_defender,
     add_participant,
-    get_attackers_incomplete,   # NEW
-    set_attackers_incomplete,   # NEW
+    get_attack_incomplete_flag,  # NEW
+    set_attack_incomplete,       # NEW
 )
 from .leaderboard import update_leaderboards
 
@@ -69,8 +70,8 @@ async def build_ping_embed(msg: discord.Message) -> discord.Embed:
         if incomplete:
             etat += f"\n{EMOJI_INCOMP} Défense incomplète"
 
-    # NEW: info "attaque incomplète" (bouton ⚔️)
-    if get_attackers_incomplete(msg.id):
+    # --- Attaque incomplète (NEW) ---
+    if get_attack_incomplete_flag(msg.id):
         etat += "\n⚠️ Les attaquants n’étaient pas 4 !"
 
     embed = discord.Embed(
@@ -135,7 +136,7 @@ class AddDefendersSelectView(discord.ui.View):
         if added_any:
             emb = await build_ping_embed(msg)
             try:
-                await msg.edit(embed=emb, view=AlertActionsView(self.bot, self.message_id, include_add_defenders=True))
+                await msg.edit(embed=emb)
             except Exception:
                 pass
             try:
@@ -146,82 +147,62 @@ class AddDefendersSelectView(discord.ui.View):
         await interaction.followup.send("✅ Ajout effectué.", ephemeral=True)
         self.stop()
 
-class AlertActionsView(discord.ui.View):
-    """Vue attachée au message d’alerte : bouton ⚔️ toujours présent, bouton 🛡️ ajouté dès qu’il y a un premier 👍."""
-    def __init__(self, bot: commands.Bot, message_id: int, include_add_defenders: bool):
-        # Pas de timeout pour laisser les boutons actifs pendant toute la vie du message
-        super().__init__(timeout=None)
+class AddDefendersButtonView(discord.ui.View):
+    def __init__(self, bot: commands.Bot, message_id: int):
+        super().__init__(timeout=7200)  # 2h
         self.bot = bot
         self.message_id = message_id
 
-        # Bouton "Attaque incomplète" (⚔️) — toujours présent
-        self.add_item(self._build_incomplete_button())
-
-        # Bouton "Ajouter défenseurs" — uniquement si demandé
-        if include_add_defenders:
-            self.add_item(self._build_add_defenders_button())
-
-    def _build_incomplete_button(self) -> discord.ui.Button:
-        async def callback(interaction: discord.Interaction):
-            # clique unique: si déjà activé, on informe juste
-            if get_attackers_incomplete(self.message_id):
-                await interaction.response.send_message("Déjà marqué comme attaque incomplète.", ephemeral=True)
-                return
-
-            set_attackers_incomplete(self.message_id, True)
-
-            # MAJ embed + leaderboards
-            channel = interaction.guild.get_channel(interaction.channel_id) or interaction.guild.get_thread(interaction.channel_id)
-            try:
-                msg = await channel.fetch_message(self.message_id)
-            except Exception:
-                await interaction.response.send_message("Impossible de retrouver le message d’alerte.", ephemeral=True)
-                return
-
-            emb = await build_ping_embed(msg)
-            try:
-                # on conserve l’état actuel du bouton 🛡️ selon qu’il existe un premier défenseur
-                first_id = get_first_defender(self.message_id)
-                await msg.edit(embed=emb, view=AlertActionsView(self.bot, self.message_id, include_add_defenders=(first_id is not None)))
-            except Exception:
-                pass
-
-            try:
-                await update_leaderboards(self.bot, interaction.guild)
-            except Exception:
-                pass
-
-            await interaction.response.send_message("⚔️ Attaque marquée comme incomplète.", ephemeral=True)
-
-        btn = discord.ui.Button(
-            label="Attaque incomplète",
-            style=discord.ButtonStyle.secondary,
-            emoji="⚔️",
-            custom_id=f"incomplete:{self.message_id}"
+    @discord.ui.button(label="Ajouter défenseurs", style=discord.ButtonStyle.primary, emoji="🛡️", custom_id="add_defenders")
+    async def add_defenders(self, interaction: discord.Interaction, button: discord.ui.Button):
+        first_id = get_first_defender(self.message_id)
+        if first_id is None or interaction.user.id != first_id:
+            await interaction.response.send_message("Bouton réservé au premier défenseur (premier 👍).", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            "Sélectionne jusqu'à 3 défenseurs à ajouter :",
+            view=AddDefendersSelectView(self.bot, self.message_id, first_id),
+            ephemeral=True
         )
-        btn.callback = callback
-        return btn
 
-    def _build_add_defenders_button(self) -> discord.ui.Button:
-        async def callback(interaction: discord.Interaction):
-            first_id = get_first_defender(self.message_id)
-            if first_id is None or interaction.user.id != first_id:
-                await interaction.response.send_message("Bouton réservé au premier défenseur (premier 👍).", ephemeral=True)
-                return
-            await interaction.response.send_message(
-                "Sélectionne jusqu'à 3 défenseurs à ajouter :",
-                view=AddDefendersSelectView(self.bot, self.message_id, first_id),
-                ephemeral=True
-            )
+# --- Bouton Attaque incomplète (NEW) ---
+class AttackIncompleteView(discord.ui.View):
+    def __init__(self, message_id: int):
+        super().__init__(timeout=None)
+        self.message_id = message_id
 
-        btn = discord.ui.Button(
-            label="Ajouter défenseurs",
-            style=discord.ButtonStyle.primary,
-            emoji="🛡️",
-            custom_id=f"adddef:{self.message_id}"
-        )
-        btn.callback = callback
-        return btn
+    @discord.ui.button(label="Attaque incomplète", style=discord.ButtonStyle.danger, emoji="⚔️", custom_id="attack_incomplete_btn")
+    async def mark_attack_incomplete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Marque une seule fois
+        changed = set_attack_incomplete(self.message_id)
+        if not changed:
+            await interaction.response.send_message("Déjà marqué comme attaque incomplète.", ephemeral=True)
+            return
+
+        # Met à jour l'embed du message
+        channel = interaction.guild.get_channel(interaction.channel_id) or interaction.guild.get_thread(interaction.channel_id)
+        if channel is None:
+            await interaction.response.send_message("Message introuvable.", ephemeral=True)
+            return
+        try:
+            msg = await channel.fetch_message(self.message_id)
+        except Exception:
+            await interaction.response.send_message("Message introuvable.", ephemeral=True)
+            return
+
+        emb = await build_ping_embed(msg)
+        try:
+            await msg.edit(embed=emb, view=self)  # garde le bouton
+        except Exception:
+            pass
+
+        # Leaderboard (les “attaques incomplètes” sont calculées depuis messages → update visuel seulement)
+        try:
+            await update_leaderboards(interaction.client, interaction.guild)
+        except Exception:
+            pass
+
+        await interaction.response.send_message("⚠️ Marqué : les attaquants n’étaient pas 4.", ephemeral=True)
 
 class PingButtonsView(discord.ui.View):
     def __init__(self, bot: commands.Bot):
@@ -267,8 +248,8 @@ class PingButtonsView(discord.ui.View):
 
         emb = await build_ping_embed(msg)
         try:
-            # Dès la création : on met la vue avec ⚔️ seulement (pas encore d’ajout défenseurs)
-            await msg.edit(embed=emb, view=AlertActionsView(self.bot, msg.id, include_add_defenders=False))
+            # Attache dès la création : le bouton “Attaque incomplète”
+            await msg.edit(embed=emb, view=AttackIncompleteView(msg.id))
         except Exception:
             pass
 
@@ -279,10 +260,12 @@ class PingButtonsView(discord.ui.View):
         except Exception:
             pass
 
+    # 🛡️ emoji ajouté ici
     @discord.ui.button(label="Guilde 1", style=discord.ButtonStyle.primary, emoji="🛡️", custom_id="pingpanel:def1")
     async def btn_def(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle_click(interaction, ROLE_DEF_ID, team=1)
 
+    # 🛡️ emoji ajouté ici
     @discord.ui.button(label="Guilde 2", style=discord.ButtonStyle.danger, emoji="🛡️", custom_id="pingpanel:def2")
     async def btn_def2(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle_click(interaction, ROLE_DEF2_ID, team=2)
@@ -306,7 +289,7 @@ class AlertsCog(commands.Cog):
         except Exception:
             pass
 
-        # Contenu du panneau (texte que tu avais validé)
+        # Contenu de l'embed du panneau
         title = "⚔️ Ping défenses percepteurs ⚔️"
         lines = []
         lines.append("**📢 Clique sur le bouton de la guilde qui se fait attaquer pour générer automatiquement un ping dans le canal défense.**")
