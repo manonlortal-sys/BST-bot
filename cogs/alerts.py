@@ -1,4 +1,4 @@
-(AlertsCog(bot))
+
 # cogs/alerts.py
 import os
 from typing import List, Optional
