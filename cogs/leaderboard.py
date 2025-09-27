@@ -3,7 +3,7 @@ import os
 import discord
 from discord.ext import commands
 
-import storage  # on importe le module pour accéder à d'éventuelles fonctions optionnelles
+import storage  # pour accéder à d'éventuelles fonctions optionnelles (attaques incomplètes)
 
 from storage import (
     get_leaderboard_post,
@@ -16,6 +16,7 @@ from storage import (
 
 LEADERBOARD_CHANNEL_ID = int(os.getenv("LEADERBOARD_CHANNEL_ID", "0"))
 
+# Séparateur visuel uniforme (entre toutes les sous-catégories)
 SEP = "━━━━━━━━━━━━━━━━━━"
 
 def medals_top_defenders(top: list[tuple[int, int]]) -> str:
@@ -72,8 +73,8 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
         msg_def = await channel.send("📊 **Leaderboard Défense**")
         set_leaderboard_post(guild.id, channel.id, msg_def.id, "defense")
 
-    # Récup données
-    # Top défenseurs : on met un plafond élevé pour lister "tous" (dans la limite des embeds)
+    # Données
+    # Top défenseurs : grand plafond pour lister (presque) tout en restant safe vis-à-vis des limites d'embed
     top_def = get_leaderboard_totals(guild.id, "defense", limit=100)
     top_block = medals_top_defenders(top_def)
 
@@ -85,20 +86,19 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
     # Répartition horaire (globale)
     buckets_all = hourly_split_all(guild.id)
 
-    # Attaques incomplètes : fonctions optionnelles (si présentes dans storage)
+    # Attaques incomplètes : fonctions optionnelles (si ajoutées dans storage)
     get_incomp_total = getattr(storage, "get_incomplete_attacks_total", None)
     get_incomp_hourly = getattr(storage, "hourly_split_incomplete_attacks", None)
 
     if callable(get_incomp_total):
         inc_att_total = int(get_incomp_total(guild.id))
     else:
-        # Repli : on utilise la valeur "incomplete" globale existante si aucune fonction dédiée
+        # Repli : on utilise la valeur "incomplete" globale (défenses incomplètes) faute de données dédiées
         inc_att_total = inc_all
 
     if callable(get_incomp_hourly):
         buckets_incomp = get_incomp_hourly(guild.id)  # tuple[int,int,int,int]
     else:
-        # Repli : pas de détail horaire si non disponible
         buckets_incomp = (0, 0, 0, 0)
 
     # ----- Construction de l'embed -----
@@ -116,16 +116,14 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
     # Séparateur
     embed_def.add_field(name="\u200b", value=SEP, inline=False)
 
-    # RÉPARTITION HORAIRE (globale)
+    # RÉPARTITION HORAIRE
     embed_def.add_field(name="**🕒 RÉPARTITION HORAIRE**", value=fmt_hourly_block(buckets_all, att_all), inline=False)
 
     # Séparateur
     embed_def.add_field(name="\u200b", value=SEP, inline=False)
 
-    # ATTAQUES INCOMPLÈTES (total + répartition horaire)
+    # ATTAQUES INCOMPLÈTES (total + répartition horaire si dispo)
     embed_def.add_field(name="**⚠️ ATTAQUES INCOMPLÈTES**", value=f"😡 **Total** : {inc_att_total}", inline=False)
-
-    # Répartition horaire des attaques incomplètes (si disponible)
     if any(buckets_incomp):
         embed_def.add_field(
             name="**🕒 RÉPARTITION HORAIRE — ATTAQUES INCOMPLÈTES**",
@@ -142,7 +140,7 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
     embed_def.add_field(name="**📌 STATS GUILDE 1**", value=g1_block, inline=True)
     embed_def.add_field(name="**📌 STATS GUILDE 2**", value=g2_block, inline=True)
 
-    # Forcer un retour à la ligne propre après les colonnes
+    # Forcer un saut propre après les colonnes
     embed_def.add_field(name="\u200b", value="\u200b", inline=False)
 
     # Push
