@@ -1,136 +1,149 @@
 # cogs/leaderboard.py
+import os
 import discord
 from discord.ext import commands
 
 from storage import (
+    get_leaderboard_post,
+    set_leaderboard_post,
     get_leaderboard_totals,
     agg_totals_all,
     agg_totals_by_team,
     hourly_split_all,
-    get_aggregate,
+    get_attack_incomplete_total,
+    hourly_split_attack_incomplete,
 )
 
+LEADERBOARD_CHANNEL_ID = int(os.getenv("LEADERBOARD_CHANNEL_ID", "0"))
 
-async def build_leaderboard_embed(guild: discord.Guild) -> discord.Embed:
-    embed = discord.Embed(
-        title="📊 Leaderboard Défenses",
-        color=discord.Color.gold()
-    )
+def _build_defense_embed(guild: discord.Guild) -> discord.Embed:
+    embed = discord.Embed(title="📊 Leaderboard Défense", color=discord.Color.blue())
 
     # ---------- Top défenseurs ----------
-    top_def = get_leaderboard_totals(guild.id, "defense", limit=10)
-    desc = ""
+    top_def = get_leaderboard_totals(guild.id, "defense")
     medals = ["🥇", "🥈", "🥉"]
-
-    for i, (uid, count) in enumerate(top_def, start=1):
+    lines = []
+    for i, (uid, cnt) in enumerate(top_def, start=1):
         member = guild.get_member(uid)
         name = member.display_name if member else f"<@{uid}>"
         prefix = medals[i - 1] if i <= 3 else f"{i}."
-        desc += f"{prefix} {name} — {count} défenses\n"
+        lines.append(f"{prefix} {name} — {cnt} défenses")
+    top_block = "\n".join(lines) if lines else "_Aucun défenseur pour le moment._"
+    embed.add_field(name="🏆 Top défenseurs", value=top_block, inline=False)
 
-    if not desc:
-        desc = "_Aucun défenseur pour le moment._"
-
-    embed.add_field(name="🏆 Top défenseurs", value=desc, inline=False)
+    # (espace)
+    embed.add_field(name="\u200b", value="\u200b", inline=False)
 
     # ---------- Stats globales ----------
-    wins, losses, inc, total = agg_totals_all(guild.id)
-    ratio = f"{(wins / (wins + losses) * 100):.1f}%" if (wins + losses) > 0 else "0%"
+    w, l, inc, tot = agg_totals_all(guild.id)
+    ratio = f"{(w/(w+l)*100):.1f}%" if (w + l) else "0%"
+    stats_globales = "\n".join([
+        f"⚔️ Attaques : {tot}",
+        f"🏆 Victoires : {w}",
+        f"❌ Défaites : {l}",
+        f"😡 Défenses incomplètes : {inc}",
+        f"📈 Ratio victoire : {ratio}",
+    ])
+    embed.add_field(name="📊 **Stats globales**", value=stats_globales or "\u200b", inline=False)
 
-    stats_globales = (
-        f"📊 **Stats globales**\n"
-        f"Attaques : {total}\n"
-        f"Victoires : {wins}\n"
-        f"Défaites : {losses}\n"
-        f"Incomplètes : {inc}\n"
-        f"Ratio : {ratio}"
-    )
-    embed.add_field(name="\u200b", value=stats_globales, inline=False)
+    # (espace)
+    embed.add_field(name="\u200b", value="\u200b", inline=False)
 
     # ---------- Stats Guilde 1 ----------
     w1, l1, inc1, tot1 = agg_totals_by_team(guild.id, 1)
-    ratio1 = f"{(w1 / (w1 + l1) * 100):.1f}%" if (w1 + l1) > 0 else "0%"
+    ratio1 = f"{(w1/(w1+l1)*100):.1f}%" if (w1 + l1) else "0%"
+    stats_g1 = "\n".join([
+        f"⚔️ Attaques : {tot1}",
+        f"🏆 Victoires : {w1}",
+        f"❌ Défaites : {l1}",
+        f"😡 Défenses incomplètes : {inc1}",
+        f"📈 Ratio victoire : {ratio1}",
+    ])
+    embed.add_field(name="📊 **Stats Guilde 1**", value=stats_g1 or "\u200b", inline=False)
 
-    stats_g1 = (
-        f"📊 **Stats Guilde 1**\n"
-        f"Attaques : {tot1}\n"
-        f"Victoires : {w1}\n"
-        f"Défaites : {l1}\n"
-        f"Incomplètes : {inc1}\n"
-        f"Ratio : {ratio1}"
-    )
-    embed.add_field(name="\u200b", value=stats_g1, inline=False)
+    # (espace)
+    embed.add_field(name="\u200b", value="\u200b", inline=False)
 
     # ---------- Stats Guilde 2 ----------
     w2, l2, inc2, tot2 = agg_totals_by_team(guild.id, 2)
-    ratio2 = f"{(w2 / (w2 + l2) * 100):.1f}%" if (w2 + l2) > 0 else "0%"
+    ratio2 = f"{(w2/(w2+l2)*100):.1f}%" if (w2 + l2) else "0%"
+    stats_g2 = "\n".join([
+        f"⚔️ Attaques : {tot2}",
+        f"🏆 Victoires : {w2}",
+        f"❌ Défaites : {l2}",
+        f"😡 Défenses incomplètes : {inc2}",
+        f"📈 Ratio victoire : {ratio2}",
+    ])
+    embed.add_field(name="📊 **Stats Guilde 2**", value=stats_g2 or "\u200b", inline=False)
 
-    stats_g2 = (
-        f"📊 **Stats Guilde 2**\n"
-        f"Attaques : {tot2}\n"
-        f"Victoires : {w2}\n"
-        f"Défaites : {l2}\n"
-        f"Incomplètes : {inc2}\n"
-        f"Ratio : {ratio2}"
-    )
-    embed.add_field(name="\u200b", value=stats_g2, inline=False)
+    # (espace)
+    embed.add_field(name="\u200b", value="\u200b", inline=False)
 
     # ---------- Répartition horaire ----------
-    morning, afternoon, evening, night = hourly_split_all(guild.id)
-    repartition = (
-        f"🕒 **Répartition horaire**\n"
-        f"🌅 Matin : {morning}\n"
-        f"☀️ Après-midi : {afternoon}\n"
-        f"🌆 Soir : {evening}\n"
-        f"🌙 Nuit : {night}"
-    )
-    embed.add_field(name="\u200b", value=repartition, inline=False)
+    m, d, e, n = hourly_split_all(guild.id)
+    hourly_block = f"🌅 Matin : {m} · 🌞 Journée : {d} · 🌆 Soir : {e} · 🌙 Nuit : {n}"
+    embed.add_field(name="🕒 **Répartition horaire**", value=hourly_block or "\u200b", inline=False)
 
-    # ---------- Attaques incomplètes ----------
-    incomplete_total = get_aggregate(guild.id, "global", "incomplete")
-    inc_morning = get_aggregate(guild.id, "hourly", "morning_inc")
-    inc_afternoon = get_aggregate(guild.id, "hourly", "afternoon_inc")
-    inc_evening = get_aggregate(guild.id, "hourly", "evening_inc")
-    inc_night = get_aggregate(guild.id, "hourly", "night_inc")
+    # (espace)
+    embed.add_field(name="\u200b", value="\u200b", inline=False)
 
-    inc_stats = f"⚠️ **Attaques incomplètes**\nTotal : {incomplete_total}"
-    embed.add_field(name="\u200b", value=inc_stats, inline=False)
+    # ---------- Attaques incomplètes (⚠️) ----------
+    inc_total = get_attack_incomplete_total(guild.id)
+    embed.add_field(name="⚠️ **Attaques incomplètes**", value=f"Total : {inc_total}", inline=False)
 
-    repartition_inc = (
-        f"🕒 **Répartition horaire (attaques incomplètes)**\n"
-        f"🌅 Matin : {inc_morning}\n"
-        f"☀️ Après-midi : {inc_afternoon}\n"
-        f"🌆 Soir : {inc_evening}\n"
-        f"🌙 Nuit : {inc_night}"
-    )
-    embed.add_field(name="\u200b", value=repartition_inc, inline=False)
+    # (espace)
+    embed.add_field(name="\u200b", value="\u200b", inline=False)
+
+    im, id_, ie, in_ = hourly_split_attack_incomplete(guild.id)
+    inc_hourly_block = f"🌅 Matin : {im} · 🌞 Journée : {id_} · 🌆 Soir : {ie} · 🌙 Nuit : {in_}"
+    embed.add_field(name="🕒 **Répartition horaire (attaques incomplètes)**", value=inc_hourly_block or "\u200b", inline=False)
 
     return embed
 
+def _build_pingeurs_embed(guild: discord.Guild) -> discord.Embed:
+    embed = discord.Embed(title="📣 Leaderboard Pingeurs", color=discord.Color.gold())
+    top_ping = get_leaderboard_totals(guild.id, "pingeur")
+    medals = ["🥇", "🥈", "🥉"]
+    lines = []
+    for i, (uid, cnt) in enumerate(top_ping, start=1):
+        member = guild.get_member(uid)
+        name = member.display_name if member else f"<@{uid}>"
+        prefix = medals[i-1] if i <= 3 else f"{i}."
+        lines.append(f"{prefix} {name} — {cnt} pings")
+    block = "\n".join(lines) if lines else "_Aucun pingeur encore_"
+    embed.add_field(name="Top pingeurs", value=block, inline=False)
+    return embed
 
 async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
-    from storage import get_leaderboard_post, set_leaderboard_post
+    channel = bot.get_channel(LEADERBOARD_CHANNEL_ID)
+    if channel is None:
+        return
 
-    embed = await build_leaderboard_embed(guild)
+    # ---------- DEFENSE ----------
+    post = get_leaderboard_post(guild.id, "defense")
+    if post:
+        try:
+            msg_def = await channel.fetch_message(post[1])
+        except discord.NotFound:
+            msg_def = await channel.send("📊 **Leaderboard Défense**")
+            set_leaderboard_post(guild.id, channel.id, msg_def.id, "defense")
+    else:
+        msg_def = await channel.send("📊 **Leaderboard Défense**")
+        set_leaderboard_post(guild.id, channel.id, msg_def.id, "defense")
+    await msg_def.edit(embed=_build_defense_embed(guild))
 
-    for type_ in ["defense"]:
-        post = get_leaderboard_post(guild.id, type_)
-        if post:
-            channel = guild.get_channel(post[0])
-            if not channel:
-                continue
-            try:
-                msg = await channel.fetch_message(post[1])
-                await msg.edit(embed=embed)
-            except Exception:
-                continue
-        else:
-            # Pas encore de leaderboard → on en crée un
-            channel = discord.utils.get(guild.text_channels, name="leaderboard")
-            if channel:
-                msg = await channel.send(embed=embed)
-                set_leaderboard_post(guild.id, channel.id, msg.id, type_)
-
+    # ---------- PINGEUR ----------
+    post_p = get_leaderboard_post(guild.id, "pingeur")
+    if post_p:
+        try:
+            msg_ping = await channel.fetch_message(post_p[1])
+        except discord.NotFound:
+            msg_ping = await channel.send("📊 **Leaderboard Pingeurs**")
+            set_leaderboard_post(guild.id, channel.id, msg_ping.id, "pingeur")
+    else:
+        msg_ping = await channel.send("📊 **Leaderboard Pingeurs**")
+        set_leaderboard_post(guild.id, channel.id, msg_ping.id, "pingeur")
+    await msg_ping.edit(embed=_build_pingeurs_embed(guild))
 
 class LeaderboardCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -138,12 +151,11 @@ class LeaderboardCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        for guild in self.bot.guilds:
+        for g in self.bot.guilds:
             try:
-                await update_leaderboards(self.bot, guild)
+                await update_leaderboards(self.bot, g)
             except Exception:
                 pass
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(LeaderboardCog(bot))
