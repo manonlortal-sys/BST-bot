@@ -37,7 +37,7 @@ async def setup_hook():
     print("🚀 setup_hook démarré")
 
     # Charger les cogs
-    for ext in ["cogs.alerts", "cogs.reactions", "cogs.leaderboard", "cogs.stats", "cogs.deletions", "cogs.snapshots"]:
+    for ext in ["cogs.alerts", "cogs.reactions", "cogs.leaderboard", "cogs.stats", "cogs.snapshots"]:
         try:
             await bot.load_extension(ext)
             print(f"✅ {ext} chargé")
