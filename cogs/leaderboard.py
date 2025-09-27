@@ -9,14 +9,11 @@ from storage import (
     agg_totals_all,
     agg_totals_by_team,
     hourly_split_all,
-    incomplete_attacks_count,   # NEW
-    hourly_split_incomplete,    # NEW
+    attacks_incomplete_total,   # NEW
+    attacks_incomplete_hourly,  # NEW
 )
 
 LEADERBOARD_CHANNEL_ID = int(os.getenv("LEADERBOARD_CHANNEL_ID", "0"))
-
-# Ligne visuelle séparatrice
-SEP_LINE = "━━━━━━━━━━━━━━━━━━━━"
 
 def medals_top_defenders(top: list[tuple[int, int]]) -> str:
     lines = []
@@ -34,11 +31,12 @@ def medals_top_defenders(top: list[tuple[int, int]]) -> str:
 def fmt_stats_block(att: int, w: int, l: int, inc: int) -> str:
     ratio = f"{(w/att*100):.1f}%" if att else "0%"
     return (
+        f"\n"
         f"⚔️ Attaques : {att}\n"
         f"🏆 Victoires : {w}\n"
         f"❌ Défaites : {l}\n"
         f"😡 Incomplet : {inc}\n"
-        f"📊 Ratio victoire : {ratio}"
+        f"📊 Ratio victoire : {ratio}\n"
     )
 
 def fmt_hourly_block(buckets: tuple[int, int, int, int], total: int) -> str:
@@ -46,11 +44,16 @@ def fmt_hourly_block(buckets: tuple[int, int, int, int], total: int) -> str:
     def pct(x: int) -> str:
         return f"{(x/total*100):.1f}%" if total else "0%"
     return (
+        f"\n"
         f"🌅 Matin : {m} ({pct(m)})\n"
         f"🌞 Après-midi : {a} ({pct(a)})\n"
         f"🌙 Soir : {s} ({pct(s)})\n"
-        f"🌌 Nuit : {n} ({pct(n)})"
+        f"🌌 Nuit : {n} ({pct(n)})\n"
     )
+
+def separator_field() -> tuple[str, str]:
+    # ligne visuelle (titre) + valeur vide
+    return ("──────────", "\u200b")
 
 async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
     if not LEADERBOARD_CHANNEL_ID:
@@ -79,33 +82,39 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
     w_g2, l_g2, inc_g2, att_g2 = agg_totals_by_team(guild.id, 2)
     buckets_all = hourly_split_all(guild.id)
 
-    # NEW: attaques incomplètes (total + répartition horaire)
-    inc_attacks_total = incomplete_attacks_count(guild.id)
-    buckets_inc = hourly_split_incomplete(guild.id)
+    # NEW: attaques incomplètes
+    atk_inc_total = attacks_incomplete_total(guild.id)
+    atk_inc_buckets = attacks_incomplete_hourly(guild.id)
 
     embed_def = discord.Embed(title="📊 Leaderboard Défense", color=discord.Color.blue())
-
-    # 🏆 Top défenseurs
     embed_def.add_field(name="**🏆 Top défenseurs**", value=top_block, inline=False)
-    embed_def.add_field(name="\u200b", value=SEP_LINE, inline=False)
 
-    # 📌 Stats globales
+    # séparateur
+    name, value = separator_field()
+    embed_def.add_field(name=name, value=value, inline=False)
+
     embed_def.add_field(name="**📌 Stats globales**", value=fmt_stats_block(att_all, w_all, l_all, inc_all), inline=False)
-    embed_def.add_field(name="\u200b", value="\n"+SEP_LINE, inline=False)
 
-    # ⚠️ Attaques incomplètes
-    # (même tranches/emoji que les attaques globales)
-    inc_block = f"Total : {inc_attacks_total}\n\n" + fmt_hourly_block(buckets_inc, inc_attacks_total)
+    # NEW section Attaques incomplètes
+    inc_block = f"\n⚠️ Total : {atk_inc_total}\n" + fmt_hourly_block(atk_inc_buckets, atk_inc_total)
     embed_def.add_field(name="**⚠️ Attaques incomplètes**", value=inc_block, inline=False)
-    embed_def.add_field(name="\u200b", value="\n"+SEP_LINE, inline=False)
 
-    # 📌 Stats par guilde
+    # séparateur
+    name, value = separator_field()
+    embed_def.add_field(name=name, value=value, inline=False)
+
     embed_def.add_field(name="**📌 Stats Guilde 1**", value=fmt_stats_block(att_g1, w_g1, l_g1, inc_g1), inline=False)
-    embed_def.add_field(name="\u200b", value="\n"+SEP_LINE, inline=False)
+
+    # séparateur
+    name, value = separator_field()
+    embed_def.add_field(name=name, value=value, inline=False)
+
     embed_def.add_field(name="**📌 Stats Guilde 2**", value=fmt_stats_block(att_g2, w_g2, l_g2, inc_g2), inline=False)
 
-    # 🕒 Répartition horaire globale (toutes attaques)
-    embed_def.add_field(name="\u200b", value="\n"+SEP_LINE, inline=False)
+    # séparateur
+    name, value = separator_field()
+    embed_def.add_field(name=name, value=value, inline=False)
+
     embed_def.add_field(name="**🕒 Répartition horaire**", value=fmt_hourly_block(buckets_all, att_all), inline=False)
 
     await msg_def.edit(embed=embed_def)
