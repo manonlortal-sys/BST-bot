@@ -42,7 +42,8 @@ def create_db():
             incomplete INTEGER,
             last_ts    INTEGER NOT NULL,
             creator_id INTEGER,
-            team       INTEGER
+            team       INTEGER,
+            attack_incomplete INTEGER DEFAULT 0
         )
     """)
 
@@ -70,7 +71,7 @@ def create_db():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS leaderboard_totals(
             guild_id INTEGER NOT NULL,
-            type     TEXT NOT NULL,      -- 'defense' ou 'pingeur'
+            type     TEXT NOT NULL,
             user_id  INTEGER NOT NULL,
             count    INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (guild_id, type, user_id)
@@ -80,8 +81,8 @@ def create_db():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS aggregates(
             guild_id INTEGER NOT NULL,
-            scope    TEXT NOT NULL,      -- 'global', 'team1', 'team2', 'hourly'
-            key      TEXT NOT NULL,      -- 'attacks','wins','losses','incomplete' | 'morning','afternoon','evening','night'
+            scope    TEXT NOT NULL,
+            key      TEXT NOT NULL,
             value    INTEGER NOT NULL,
             PRIMARY KEY (guild_id, scope, key)
         )
@@ -91,6 +92,13 @@ def create_db():
     try:
         if not _column_exists(con, "messages", "team"):
             cur.execute("ALTER TABLE messages ADD COLUMN team INTEGER")
+            con.commit()
+    except Exception:
+        pass
+
+    try:
+        if not _column_exists(con, "messages", "attack_incomplete"):
+            cur.execute("ALTER TABLE messages ADD COLUMN attack_incomplete INTEGER DEFAULT 0")
             con.commit()
     except Exception:
         pass
@@ -110,8 +118,8 @@ def upsert_message(
     team: Optional[int] = None,
 ):
     con.execute("""
-        INSERT INTO messages(message_id, guild_id, channel_id, created_ts, outcome, incomplete, last_ts, creator_id, team)
-        VALUES (?,?,?,?,NULL,0,?,?,?)
+        INSERT INTO messages(message_id, guild_id, channel_id, created_ts, outcome, incomplete, last_ts, creator_id, team, attack_incomplete)
+        VALUES (?,?,?,?,NULL,0,?,?,?,0)
         ON CONFLICT(message_id) DO NOTHING
     """, (message_id, guild_id, channel_id, created_ts, utcnow_i(), creator_id, team))
     if team is not None:
@@ -128,12 +136,34 @@ def get_message_creator(con: sqlite3.Connection, message_id: int) -> Optional[in
     return row["creator_id"] if row else None
 
 @with_db
+def get_message_info(con: sqlite3.Connection, message_id: int):
+    row = con.execute("""
+        SELECT guild_id, channel_id, team, creator_id
+        FROM messages
+        WHERE message_id=?
+    """, (message_id,)).fetchone()
+    if not row:
+        return None
+    return (int(row["guild_id"]), int(row["channel_id"]), row["team"], row["creator_id"])
+
+@with_db
 def set_outcome(con: sqlite3.Connection, message_id: int, outcome: Optional[str]):
     con.execute("UPDATE messages SET outcome=?, last_ts=? WHERE message_id=?", (outcome, utcnow_i(), message_id))
 
 @with_db
 def set_incomplete(con: sqlite3.Connection, message_id: int, incomplete: bool):
     con.execute("UPDATE messages SET incomplete=?, last_ts=? WHERE message_id=?", (1 if incomplete else 0, utcnow_i(), message_id))
+
+@with_db
+def set_attack_incomplete(con: sqlite3.Connection, message_id: int, flag: bool) -> bool:
+    cur = con.execute("UPDATE messages SET attack_incomplete=?, last_ts=? WHERE message_id=?",
+                      (1 if flag else 0, utcnow_i(), message_id))
+    return cur.rowcount > 0
+
+@with_db
+def is_attack_incomplete(con: sqlite3.Connection, message_id: int) -> bool:
+    row = con.execute("SELECT attack_incomplete FROM messages WHERE message_id=?", (message_id,)).fetchone()
+    return bool(row and row["attack_incomplete"])
 
 # ---------- Participants ----------
 @with_db
@@ -177,6 +207,15 @@ def get_participants_detailed(con: sqlite3.Connection, message_id: int) -> List[
         ORDER BY ts ASC
     """, (message_id,)).fetchall()
     return [(r["user_id"], r["added_by"], r["ts"]) for r in rows]
+
+@with_db
+def get_participants_ids(con: sqlite3.Connection, message_id: int):
+    rows = con.execute("""
+        SELECT user_id
+        FROM participants
+        WHERE message_id=?
+    """, (message_id,)).fetchall()
+    return [int(r["user_id"]) for r in rows]
 
 @with_db
 def get_first_defender(con: sqlite3.Connection, message_id: int) -> Optional[int]:
@@ -235,7 +274,7 @@ def get_leaderboard_totals_all(con: sqlite3.Connection, guild_id: int, type_: st
     """, (guild_id, type_)).fetchall()
     return {r["user_id"]: r["count"] for r in rows}
 
-# ---------- Leaderboard posts (messages épinglés) ----------
+# ---------- Leaderboard posts ----------
 @with_db
 def get_leaderboard_post(con: sqlite3.Connection, guild_id: int, type_: str):
     row = con.execute("""
@@ -360,6 +399,43 @@ def hourly_split_all(con: sqlite3.Connection, guild_id: int) -> tuple[int, int, 
         get_aggregate(guild_id, "hourly", "evening"),
         get_aggregate(guild_id, "hourly", "night"),
     )
+
+# ---------- Attack-incomplete analytics ----------
+@with_db
+def get_attack_incomplete_total(con: sqlite3.Connection, guild_id: int) -> int:
+    row = con.execute("""
+        SELECT COUNT(*) AS c
+        FROM messages
+        WHERE guild_id=? AND attack_incomplete=1
+    """, (guild_id,)).fetchone()
+    return int(row["c"] or 0)
+
+@with_db
+def hourly_split_attack_incomplete(con: sqlite3.Connection, guild_id: int) -> tuple[int, int, int, int]:
+    rows = con.execute("""
+        SELECT created_ts
+        FROM messages
+        WHERE guild_id=? AND attack_incomplete=1
+    """, (guild_id,)).fetchall()
+    counts = [0, 0, 0, 0]
+    for (ts,) in rows:
+        dt_paris = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(ZoneInfo("Europe/Paris"))
+        h = dt_paris.hour
+        if 6 <= h < 10:
+            counts[0] += 1
+        elif 10 <= h < 18:
+            counts[1] += 1
+        elif 18 <= h < 24:
+            counts[2] += 1
+        else:
+            counts[3] += 1
+    return tuple(counts)
+
+# ---------- Delete cascade ----------
+@with_db
+def delete_message_cascade(con: sqlite3.Connection, message_id: int):
+    con.execute("DELETE FROM participants WHERE message_id=?", (message_id,))
+    con.execute("DELETE FROM messages WHERE message_id=?", (message_id,))
 
 # ---------- Player stats ----------
 @with_db
