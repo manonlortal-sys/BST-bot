@@ -10,19 +10,19 @@ from storage import (
     set_outcome,
     set_incomplete,
     get_first_defender,
-    is_tracked_message,  # <= NOUVEAU
+    is_tracked_message,
 )
 from .alerts import (
     build_ping_embed,
     EMOJI_VICTORY, EMOJI_DEFEAT, EMOJI_INCOMP, EMOJI_JOIN,
-    AddDefendersButtonView,
+    AlertActionsView,  # NEW: pour ré-attacher la vue combinée (⚔️ + éventuellement 🛡️)
 )
 from .leaderboard import update_leaderboards
 
 TARGET_EMOJIS = {EMOJI_VICTORY, EMOJI_DEFEAT, EMOJI_INCOMP, EMOJI_JOIN}
 
 class ReactionsCog(commands.Cog):
-    """Gère les réactions sur les messages d'alerte : participants (👍), état (🏆/❌/😡), embed & leaderboards."""
+    """Gère les réactions : participants (👍), état (🏆/❌/😡), embed & leaderboards."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -48,20 +48,17 @@ class ReactionsCog(commands.Cog):
         except discord.NotFound:
             return
 
-        # ✅ Nouveau critère robuste : traiter seulement les messages d'alerte suivis en DB
         if not is_tracked_message(msg.id):
             return
 
-        # Flag pour afficher le bouton après 1er 👍
         attach_add_defenders_view = False
 
-        # ----- Gestion du 👍 -----
+        # 👍 participation
         if emoji_str == EMOJI_JOIN and payload.user_id != self.bot.user.id:
             if is_add:
                 inserted = add_participant(msg.id, payload.user_id, payload.user_id, "reaction")
                 if inserted:
                     incr_leaderboard(guild.id, "defense", payload.user_id)
-                # si c'est le premier défenseur, on affichera le bouton
                 first_id = get_first_defender(msg.id)
                 if first_id == payload.user_id:
                     attach_add_defenders_view = True
@@ -69,13 +66,12 @@ class ReactionsCog(commands.Cog):
                 entry = get_participant_entry(msg.id, payload.user_id)
                 if entry:
                     added_by, source, _ = entry
-                    # On ne retire que les participations ajoutées par réaction par l'utilisateur lui-même
                     if source == "reaction" and added_by == payload.user_id:
                         removed = remove_participant(msg.id, payload.user_id)
                         if removed:
                             decr_leaderboard(guild.id, "defense", payload.user_id)
 
-        # ----- Recalcule l'état (🏆/❌/😡) -----
+        # État victoire/défaite/😡
         reactions = {str(r.emoji): r.count for r in msg.reactions}
         win_count  = reactions.get(EMOJI_VICTORY, 0)
         loss_count = reactions.get(EMOJI_DEFEAT,  0)
@@ -90,19 +86,12 @@ class ReactionsCog(commands.Cog):
 
         set_incomplete(msg.id, inc_count > 0)
 
-        # ----- Rebuild embed + leaderboards -----
+        # Rebuild embed + vue qui préserve ⚔️ et ajoute 🛡️ si nécessaire
         try:
             emb = await build_ping_embed(msg)
-
-            # ✅ Le bouton “Ajouter défenseurs” doit être visible dès qu'un premier 👍 existe,
-            #    et rester visible ensuite (on ne l'enlève plus lors des edits).
             first_id_now = get_first_defender(msg.id)
-            should_have_view = first_id_now is not None
-
-            if attach_add_defenders_view or should_have_view:
-                await msg.edit(embed=emb, view=AddDefendersButtonView(self.bot, msg.id))
-            else:
-                await msg.edit(embed=emb)
+            should_add = attach_add_defenders_view or (first_id_now is not None)
+            await msg.edit(embed=emb, view=AlertActionsView(self.bot, msg.id, include_add_defenders=should_add))
         except Exception:
             pass
 
