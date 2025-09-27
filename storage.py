@@ -138,13 +138,14 @@ def set_outcome(con: sqlite3.Connection, message_id: int, outcome: Optional[str]
 def set_incomplete(con: sqlite3.Connection, message_id: int, incomplete: bool):
     con.execute("UPDATE messages SET incomplete=?, last_ts=? WHERE message_id=?", (1 if incomplete else 0, utcnow_i(), message_id))
 
-# --- NEW: attack_incomplete flag ---
+# --- Attaque incomplète (nouveau) ---
 @with_db
-def set_attack_incomplete(con: sqlite3.Connection, message_id: int, flag: bool):
-    con.execute("UPDATE messages SET attack_incomplete=?, last_ts=? WHERE message_id=?", (1 if flag else 0, utcnow_i(), message_id))
+def set_attack_incomplete(con: sqlite3.Connection, message_id: int) -> bool:
+    cur = con.execute("UPDATE messages SET attack_incomplete=1, last_ts=? WHERE message_id=? AND attack_incomplete=0", (utcnow_i(), message_id))
+    return cur.rowcount > 0
 
 @with_db
-def is_attack_incomplete(con: sqlite3.Connection, message_id: int) -> bool:
+def get_attack_incomplete_flag(con: sqlite3.Connection, message_id: int) -> bool:
     row = con.execute("SELECT attack_incomplete FROM messages WHERE message_id=?", (message_id,)).fetchone()
     return bool(row["attack_incomplete"]) if row else False
 
@@ -248,7 +249,7 @@ def get_leaderboard_totals_all(con: sqlite3.Connection, guild_id: int, type_: st
     """, (guild_id, type_)).fetchall()
     return {r["user_id"]: r["count"] for r in rows}
 
-# ---------- Leaderboard posts ----------
+# ---------- Leaderboard posts (messages épinglés) ----------
 @with_db
 def get_leaderboard_post(con: sqlite3.Connection, guild_id: int, type_: str):
     row = con.execute("""
@@ -374,15 +375,23 @@ def hourly_split_all(con: sqlite3.Connection, guild_id: int) -> tuple[int, int, 
         get_aggregate(guild_id, "hourly", "night"),
     )
 
-# ---------- NEW: Attaques incomplètes ----------
+# --- Attaques incomplètes : total + répartition horaire (direct depuis messages) ---
 @with_db
-def get_incomplete_attacks_total(con: sqlite3.Connection, guild_id: int) -> int:
-    row = con.execute("SELECT COUNT(*) AS c FROM messages WHERE guild_id=? AND attack_incomplete=1", (guild_id,)).fetchone()
+def attacks_incomplete_total(con: sqlite3.Connection, guild_id: int) -> int:
+    row = con.execute("""
+        SELECT COUNT(*) AS c
+        FROM messages
+        WHERE guild_id=? AND attack_incomplete=1
+    """, (guild_id,)).fetchone()
     return int(row["c"] or 0)
 
 @with_db
-def hourly_split_incomplete_attacks(con: sqlite3.Connection, guild_id: int) -> tuple[int, int, int, int]:
-    rows = con.execute("SELECT created_ts FROM messages WHERE guild_id=? AND attack_incomplete=1", (guild_id,)).fetchall()
+def attacks_incomplete_hourly(con: sqlite3.Connection, guild_id: int) -> tuple[int, int, int, int]:
+    rows = con.execute("""
+        SELECT created_ts
+        FROM messages
+        WHERE guild_id=? AND attack_incomplete=1
+    """, (guild_id,)).fetchall()
     counts = [0, 0, 0, 0]
     for (ts,) in rows:
         dt_paris = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(ZoneInfo("Europe/Paris"))
@@ -396,6 +405,34 @@ def hourly_split_incomplete_attacks(con: sqlite3.Connection, guild_id: int) -> t
         else:
             counts[3] += 1
     return tuple(counts)
+
+# ---------- Helpers pour suppression d'un message suivi ----------
+@with_db
+def get_message_info(con: sqlite3.Connection, message_id: int):
+    """Retourne (guild_id, creator_id) pour un message suivi, ou None si absent."""
+    row = con.execute("""
+        SELECT guild_id, creator_id
+        FROM messages
+        WHERE message_id=?
+    """, (message_id,)).fetchone()
+    if not row:
+        return None
+    return int(row["guild_id"]), (int(row["creator_id"]) if row["creator_id"] is not None else None)
+
+@with_db
+def get_participants_user_ids(con: sqlite3.Connection, message_id: int) -> List[int]:
+    rows = con.execute("""
+        SELECT user_id
+        FROM participants
+        WHERE message_id=?
+    """, (message_id,)).fetchall()
+    return [int(r["user_id"]) for r in rows]
+
+@with_db
+def delete_message_and_participants(con: sqlite3.Connection, message_id: int):
+    """Supprime d'abord les participants, puis le message."""
+    con.execute("DELETE FROM participants WHERE message_id=?", (message_id,))
+    con.execute("DELETE FROM messages WHERE message_id=?", (message_id,))
 
 # ---------- Player stats ----------
 @with_db
