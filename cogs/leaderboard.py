@@ -11,7 +11,7 @@ from storage import (
     hourly_split_all,
     attacks_incomplete_total,
     attacks_incomplete_hourly,
-    get_guild_config,   # NEW
+    get_guild_config,   # multi-serveur
 )
 
 def medals_top_defenders(top: list[tuple[int, int]]) -> str:
