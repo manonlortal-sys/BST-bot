@@ -73,7 +73,7 @@ if __name__ == "__main__":
         create_db()
         # Insert ta config actuelle
         upsert_guild_config(
-            guild_id=1280396795046006836,  # ⚠️ remplace par ton vrai guild_id
+            guild_id=1280234399610179634, 
             alert_channel_id=1327548733398843413,
             leaderboard_channel_id=1419025350641582182,
             snapshot_channel_id=1421100876977803274,
