@@ -4,6 +4,8 @@ from flask import Flask
 import discord
 from discord.ext import commands
 
+from storage import create_db, upsert_guild_config
+
 # ========= Flask keep-alive =========
 app = Flask(__name__)
 
@@ -22,13 +24,11 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 if not DISCORD_TOKEN:
     raise SystemExit("Missing DISCORD_TOKEN environment variable.")
 
-LEADERBOARD_CHANNEL_ID = int(os.getenv("LEADERBOARD_CHANNEL_ID", "0"))
-
 intents = discord.Intents.default()
 intents.guilds = True
 intents.members = True
 intents.messages = True
-intents.reactions = True  # nécessaire pour on_raw_reaction_add/remove
+intents.reactions = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -36,7 +36,6 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 async def setup_hook():
     print("🚀 setup_hook démarré")
 
-    # Charger les cogs
     for ext in ["cogs.alerts", "cogs.reactions", "cogs.leaderboard", "cogs.stats", "cogs.snapshots"]:
         try:
             await bot.load_extension(ext)
@@ -44,7 +43,6 @@ async def setup_hook():
         except Exception as e:
             print(f"❌ Erreur chargement {ext} :", e)
 
-    # View persistante pour les anciens panneaux postés
     try:
         from cogs.alerts import PingButtonsView
         bot.add_view(PingButtonsView(bot))
@@ -52,7 +50,6 @@ async def setup_hook():
     except Exception as e:
         print("❌ Erreur enregistrement View PingButtonsView :", e)
 
-    # Sync globale (peut prendre du temps à apparaître côté Discord)
     try:
         await bot.tree.sync()
         print("✅ Slash commands sync (global)")
@@ -63,7 +60,6 @@ async def setup_hook():
 async def on_ready():
     print(f"✅ Connecté en tant que {bot.user} (ID: {bot.user.id})")
 
-    # 🔁 Sync par serveur pour rendre les slash visibles immédiatement (ex: /stats)
     try:
         for g in bot.guilds:
             await bot.tree.sync(guild=discord.Object(id=g.id))
@@ -71,26 +67,23 @@ async def on_ready():
     except Exception as e:
         print("❌ Per-guild slash sync error:", e)
 
-    if LEADERBOARD_CHANNEL_ID:
-        channel = bot.get_channel(LEADERBOARD_CHANNEL_ID)
-        if channel:
-            try:
-                # Juste un message d'initialisation si rien
-                async for m in channel.history(limit=10):
-                    break
-                else:
-                    await channel.send("📊 **Leaderboard initialisé**")
-            except Exception as e:
-                print("❌ Erreur init leaderboard :", e)
-
 if __name__ == "__main__":
     print("⚡ Démarrage du bot...")
-    # Init DB
     try:
-        from storage import create_db
         create_db()
-        print("✅ DB vérifiée/initialisée")
+        # ⬇️ Insère ta configuration serveur (remplace guild_id si besoin)
+        upsert_guild_config(
+            guild_id=1280234399610179634,  # <= TON SERVEUR
+            alert_channel_id=1327548733398843413,
+            leaderboard_channel_id=1419025350641582182,
+            snapshot_channel_id=1421100876977803274,
+            role_def_id=1326671483455537172,
+            role_def2_id=1328097429525893192,
+            role_test_id=1358771105980088390,
+            admin_role_id=1280396795046006836
+        )
+        print("✅ DB vérifiée/initialisée avec config serveur")
     except Exception as e:
-        print("⚠️ Impossible d'initialiser la DB au démarrage :", e)
+        print("⚠️ Impossible d'initialiser la DB :", e)
 
     bot.run(DISCORD_TOKEN)
