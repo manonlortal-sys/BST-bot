@@ -12,7 +12,7 @@ from storage import (
     hourly_split_all,
     seed_leaderboard_totals,
     seed_aggregates,
-    get_guild_config,   # NEW
+    get_guild_config,   # multi-serveur
 )
 
 def paris_now_iso() -> str:
