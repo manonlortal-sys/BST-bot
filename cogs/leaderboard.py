@@ -1,4 +1,4 @@
-import os
+# cogs/leaderboard.py
 import discord
 from discord.ext import commands
 
@@ -9,11 +9,10 @@ from storage import (
     agg_totals_all,
     agg_totals_by_team,
     hourly_split_all,
-    attacks_incomplete_total,   # NEW
-    attacks_incomplete_hourly,  # NEW
+    attacks_incomplete_total,
+    attacks_incomplete_hourly,
+    get_guild_config,   # NEW
 )
-
-LEADERBOARD_CHANNEL_ID = int(os.getenv("LEADERBOARD_CHANNEL_ID", "0"))
 
 def medals_top_defenders(top: list[tuple[int, int]]) -> str:
     lines = []
@@ -52,13 +51,14 @@ def fmt_hourly_block(buckets: tuple[int, int, int, int], total: int) -> str:
     )
 
 def separator_field() -> tuple[str, str]:
-    # ligne visuelle (titre) + valeur vide
     return ("──────────", "\u200b")
 
 async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
-    if not LEADERBOARD_CHANNEL_ID:
+    cfg = get_guild_config(guild.id)
+    if not cfg:
         return
-    channel = bot.get_channel(LEADERBOARD_CHANNEL_ID)
+
+    channel = bot.get_channel(cfg["leaderboard_channel_id"])
     if channel is None or not isinstance(channel, discord.TextChannel):
         return
 
@@ -82,36 +82,30 @@ async def update_leaderboards(bot: commands.Bot, guild: discord.Guild):
     w_g2, l_g2, inc_g2, att_g2 = agg_totals_by_team(guild.id, 2)
     buckets_all = hourly_split_all(guild.id)
 
-    # NEW: attaques incomplètes
     atk_inc_total = attacks_incomplete_total(guild.id)
     atk_inc_buckets = attacks_incomplete_hourly(guild.id)
 
     embed_def = discord.Embed(title="📊 Leaderboard Défense", color=discord.Color.blue())
     embed_def.add_field(name="**🏆 Top défenseurs**", value=top_block, inline=False)
 
-    # séparateur
     name, value = separator_field()
     embed_def.add_field(name=name, value=value, inline=False)
 
     embed_def.add_field(name="**📌 Stats globales**", value=fmt_stats_block(att_all, w_all, l_all, inc_all), inline=False)
 
-    # NEW section Attaques incomplètes
     inc_block = f"\n⚠️ Total : {atk_inc_total}\n" + fmt_hourly_block(atk_inc_buckets, atk_inc_total)
     embed_def.add_field(name="**⚠️ Attaques incomplètes**", value=inc_block, inline=False)
 
-    # séparateur
     name, value = separator_field()
     embed_def.add_field(name=name, value=value, inline=False)
 
     embed_def.add_field(name="**📌 Stats Guilde 1**", value=fmt_stats_block(att_g1, w_g1, l_g1, inc_g1), inline=False)
 
-    # séparateur
     name, value = separator_field()
     embed_def.add_field(name=name, value=value, inline=False)
 
     embed_def.add_field(name="**📌 Stats Guilde 2**", value=fmt_stats_block(att_g2, w_g2, l_g2, inc_g2), inline=False)
 
-    # séparateur
     name, value = separator_field()
     embed_def.add_field(name=name, value=value, inline=False)
 
