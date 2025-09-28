@@ -295,7 +295,7 @@ def get_leaderboard_totals_all(con: sqlite3.Connection, guild_id: int, type_: st
         WHERE guild_id=? AND type=?
         ORDER BY count DESC
     """, (guild_id, type_)).fetchall()
-    return {r["user_id"]: r["count"] for r in rows]
+    return {r["user_id"]: r["count"] for r in rows}
 
 # ---------- Leaderboard posts ----------
 @with_db
