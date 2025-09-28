@@ -13,7 +13,7 @@ from storage import (
     add_participant,
     get_attack_incomplete_flag,
     set_attack_incomplete,
-    get_guild_config,   # NEW
+    get_guild_config,   # multi-serveur
 )
 from .leaderboard import update_leaderboards
 
@@ -139,12 +139,12 @@ class AddDefendersButtonView(discord.ui.View):
         first_id = get_first_defender(self.message_id)
         if first_id is None or interaction.user.id != first_id:
             await interaction.response.send_message("Bouton réservé au premier défenseur (premier 👍).", ephemeral=True)
-        else:
-            await interaction.response.send_message(
-                "Sélectionne jusqu'à 3 défenseurs à ajouter :",
-                view=AddDefendersSelectView(self.bot, self.message_id, first_id),
-                ephemeral=True
-            )
+            return
+        await interaction.response.send_message(
+            "Sélectionne jusqu'à 3 défenseurs à ajouter :",
+            view=AddDefendersSelectView(self.bot, self.message_id, first_id),
+            ephemeral=True
+        )
 
 class AttackIncompleteView(discord.ui.View):
     def __init__(self, message_id: int):
@@ -172,26 +172,16 @@ class PingButtonsView(discord.ui.View):
         self.bot = bot
 
     async def _handle_click(self, interaction: discord.Interaction, role_id: int, team: Optional[int]):
-        # ✅ acquitter l'interaction AVANT d'utiliser followup
-        await interaction.response.defer(ephemeral=True)
-
         guild = interaction.guild
         cfg = get_guild_config(guild.id)
         if not cfg:
-            await interaction.followup.send("⚠️ Configuration manquante pour ce serveur.", ephemeral=True)
+            await interaction.response.send_message("⚠️ Configuration manquante pour ce serveur.", ephemeral=True)
             return
 
         alert_channel = guild.get_channel(cfg["alert_channel_id"])
         msg = await alert_channel.send(f"<@&{role_id}> — **Percepteur attaqué !** Merci de vous connecter.")
 
-        upsert_message(
-            msg.id,
-            msg.guild.id,
-            msg.channel.id,
-            int(msg.created_at.timestamp()),
-            creator_id=interaction.user.id,
-            team=team
-        )
+        upsert_message(msg.id, msg.guild.id, msg.channel.id, int(msg.created_at.timestamp()), creator_id=interaction.user.id, team=team)
         incr_leaderboard(guild.id, "pingeur", interaction.user.id)
 
         emb = await build_ping_embed(msg)
