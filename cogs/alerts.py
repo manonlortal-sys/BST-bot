@@ -13,7 +13,7 @@ from storage import (
     add_participant,
     get_attack_incomplete_flag,
     set_attack_incomplete,
-    get_guild_config,   # multi-serveur
+    get_guild_config,
 )
 from .leaderboard import update_leaderboards
 
@@ -172,10 +172,16 @@ class PingButtonsView(discord.ui.View):
         self.bot = bot
 
     async def _handle_click(self, interaction: discord.Interaction, role_id: int, team: Optional[int]):
+        # ✅ fix : on "ouvre" l'interaction avant le followup
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=False)
+        except Exception:
+            pass
+
         guild = interaction.guild
         cfg = get_guild_config(guild.id)
         if not cfg:
-            await interaction.response.send_message("⚠️ Configuration manquante pour ce serveur.", ephemeral=True)
+            await interaction.followup.send("⚠️ Configuration manquante pour ce serveur.", ephemeral=True)
             return
 
         alert_channel = guild.get_channel(cfg["alert_channel_id"])
