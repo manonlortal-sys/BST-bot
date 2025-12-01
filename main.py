@@ -59,6 +59,7 @@ async def main():
         "cogs.alerts",
         "cogs.leaderboard",
         "cogs.reactions",
+        "cogs.utils",
         "cogs.ping_panel",
     ]
 
