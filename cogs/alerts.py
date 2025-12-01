@@ -36,10 +36,9 @@ class AttackerModal(discord.ui.Modal, title="Définir l'attaquant"):
         state = get_state(self.bot)
         alert = state.alerts.get(self.alert_message_id)
         if not alert:
-            await interaction.response.send_message(
+            return await interaction.response.send_message(
                 "Cette alerte n'existe plus.", ephemeral=True
             )
-            return
 
         alert.attacker = str(self.attacker_input.value).strip()
         alerts_cog: Optional[Alerts] = self.bot.get_cog("Alerts")  # type: ignore
@@ -61,17 +60,15 @@ class DefenderSelect(discord.ui.UserSelect):
         state = get_state(self.bot)
         alert = state.alerts.get(self.alert_message_id)
         if not alert:
-            await interaction.response.send_message(
+            return await interaction.response.send_message(
                 "Cette alerte n'existe plus.", ephemeral=True
             )
-            return
 
         alerts_cog: Optional[Alerts] = self.bot.get_cog("Alerts")  # type: ignore
         if not alerts_cog:
-            await interaction.response.send_message(
+            return await interaction.response.send_message(
                 "Système d'alertes indisponible.", ephemeral=True
             )
-            return
 
         added: List[str] = []
         for user in self.values:
@@ -127,10 +124,9 @@ class AlertView(discord.ui.View):
     ):
         state = get_state(self.bot)
         if interaction.message.id not in state.alerts:
-            await interaction.response.send_message(
+            return await interaction.response.send_message(
                 "Cette alerte n'existe plus.", ephemeral=True
             )
-            return
 
         await interaction.response.send_modal(
             AttackerModal(self.bot, interaction.message.id)
@@ -146,10 +142,9 @@ class AlertView(discord.ui.View):
     ):
         state = get_state(self.bot)
         if interaction.message.id not in state.alerts:
-            await interaction.response.send_message(
+            return await interaction.response.send_message(
                 "Cette alerte n'existe plus.", ephemeral=True
             )
-            return
 
         view = DefenderSelectView(self.bot, interaction.message.id)
         await interaction.response.send_message(
@@ -161,9 +156,7 @@ class Alerts(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.alert_view = AlertView(bot)
-        bot.add_view(self.alert_view)  # vue persistante
-
-    # --- Construction / mise à jour de l'embed ---
+        bot.add_view(self.alert_view)  # vue persistante pour les alertes
 
     def build_alert_embed(self, alert: AlertData) -> discord.Embed:
         if alert.state == "won" and alert.incomplete:
@@ -247,25 +240,21 @@ class Alerts(commands.Cog):
         except discord.HTTPException:
             pass
 
-    # --- API utilisée par les autres cogs ---
-
     async def handle_ping_button(
         self, interaction: discord.Interaction, is_test: bool
     ):
         state = get_state(self.bot)
         user = interaction.user
 
-        # Bouton Test : réservé aux admins
+        # Bouton Test : réservé aux admins (sécurité côté Alerts aussi)
         if is_test:
             if not isinstance(user, discord.Member) or not any(
                 r.id == ROLE_ADMIN_ID for r in user.roles
             ):
-                await interaction.response.send_message(
+                return await interaction.response.send_message(
                     "Ce bouton est réservé aux administrateurs.", ephemeral=True
                 )
-                return
         else:
-            # Cooldown global uniquement pour Ping! (pas Test)
             import time as _time
             now = _time.time()
             if (
@@ -276,26 +265,23 @@ class Alerts(commands.Cog):
                     PING_COOLDOWN_SECONDS - (now - state.last_ping_timestamp)
                 )
                 restant = max(restant, 1)
-                await interaction.response.send_message(
+                return await interaction.response.send_message(
                     f"Un ping a déjà été envoyé récemment. Merci d'attendre encore {restant} secondes.",
                     ephemeral=True,
                 )
-                return
             state.last_ping_timestamp = now
 
         guild = interaction.guild
         if guild is None:
-            await interaction.response.send_message(
+            return await interaction.response.send_message(
                 "Cette commande ne peut être utilisée que sur un serveur.", ephemeral=True
             )
-            return
 
         defense_channel = self.bot.get_channel(CHANNEL_DEFENSE_ID)
         if not isinstance(defense_channel, discord.TextChannel):
-            await interaction.response.send_message(
+            return await interaction.response.send_message(
                 "Le canal de défense est introuvable.", ephemeral=True
             )
-            return
 
         if is_test:
             role_mention = f"<@&{ROLE_TEST_ID}>"
@@ -308,7 +294,7 @@ class Alerts(commands.Cog):
 
         created_ts = now_ts()
         alert_data = AlertData(
-            message_id=0,  # provisoire
+            message_id=0,
             channel_id=defense_channel.id,
             guild_id=guild.id,
             triggered_by_id=user.id,
@@ -318,20 +304,17 @@ class Alerts(commands.Cog):
 
         embed = self.build_alert_embed(alert_data)
 
-        # On envoie l'alerte avec les boutons
         msg = await defense_channel.send(content=text, embed=embed, view=self.alert_view)
 
         alert_data.message_id = msg.id
         state.alerts[msg.id] = alert_data
 
-        # Leaderboard Ping : uniquement pour Ping!, pas pour Test
         if not is_test:
             state.ping_counts[user.id] = state.ping_counts.get(user.id, 0) + 1
             leaderboard_cog = self.bot.get_cog("Leaderboard")  # type: ignore
             if leaderboard_cog:
                 await leaderboard_cog.update_leaderboards()  # type: ignore
 
-        # On confirme l'action au clickeur
         if not interaction.response.is_done():
             await interaction.response.send_message(
                 "Alerte envoyée dans le canal de défense.", ephemeral=True
@@ -349,7 +332,6 @@ class Alerts(commands.Cog):
             return False
 
         alert.defenders.add(user_id)
-        # Leaderboard Défenseurs : +1 par alerte où la personne est défenseur
         state.defense_counts[user_id] = state.defense_counts.get(user_id, 0) + 1
 
         await self.update_alert_message(alert_id)
