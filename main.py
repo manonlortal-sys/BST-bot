@@ -80,7 +80,7 @@ async def on_ready():
 
     print(f"Connecté en tant que {bot.user} (ID: {bot.user.id})")
 
-    # Créer la vue ici (la loop tourne à ce moment-là)
+    # Créer la vue ici (la loop existe)
     if panel_view is None:
         panel_view = PingPanelView(bot)
         bot.add_view(panel_view)
@@ -88,6 +88,8 @@ async def on_ready():
     try:
         synced = await bot.tree.sync()
         print(f"Commandes slash synchronisées ({len(synced)} commandes).")
+        for cmd in synced:
+            print(f"- /{cmd.name}")
     except Exception as e:
         print(f"Erreur de sync des commandes : {e}")
 
@@ -95,15 +97,14 @@ async def on_ready():
 # --- Slash command /ping ---
 
 
+@app_commands.checks.has_role(ROLE_ADMIN_ID)
 @bot.tree.command(
     name="ping",
     description="Afficher le panel d'alerte défense percepteurs.",
 )
-@app_commands.checks.has_role(ROLE_ADMIN_ID)
 async def ping_command(interaction: discord.Interaction):
     global panel_view
 
-    # sécurité : au cas où on_ready n’aurait pas encore tourné
     if panel_view is None:
         panel_view = PingPanelView(bot)
         bot.add_view(panel_view)
