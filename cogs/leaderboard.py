@@ -33,7 +33,7 @@ class Leaderboard(commands.Cog):
             except discord.HTTPException:
                 def_msg = None
 
-        # Si pas trouvés, on essaie de les retrouver dans l'historique
+        # Sinon, on essaie de les retrouver dans l'historique
         if not ping_msg or not def_msg:
             async for msg in channel.history(limit=50):
                 if msg.author.id != self.bot.user.id:
@@ -82,7 +82,6 @@ class Leaderboard(commands.Cog):
 
         ping_lines: List[str] = []
 
-        # On ne garde que ceux qui ont au moins 1 ping
         ping_items: List[Tuple[int, int]] = [
             (uid, count)
             for uid, count in state.ping_counts.items()
@@ -151,7 +150,6 @@ class Leaderboard(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        # Initialisation sur le(s) serveur(s)
         await self.update_leaderboards()
 
     @commands.Cog.listener()
@@ -171,4 +169,3 @@ class Leaderboard(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Leaderboard(bot))
-
