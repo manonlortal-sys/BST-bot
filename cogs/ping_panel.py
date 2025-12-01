@@ -39,7 +39,7 @@ class PingPanelView(discord.ui.View):
     async def test_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
-        # Vérification admin ici
+        # Vérification admin (sécurité supplémentaire, même si on a un check sur la commande)
         if not isinstance(interaction.user, discord.Member) or not any(
             r.id == ROLE_ADMIN_ID for r in interaction.user.roles
         ):
@@ -62,13 +62,7 @@ class PingPanel(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.view = PingPanelView(bot)
-
-        # Vue persistante pour que les boutons restent actifs
-        bot.add_view(self.view)
-
-        # 💡 Enregistrement explicite de la commande slash dans le CommandTree
-        # (ce qui semble ne pas bien se faire automatiquement chez toi)
-        self.bot.tree.add_command(self.ping_command)
+        bot.add_view(self.view)  # vue persistante
 
     @app_commands.checks.has_role(ROLE_ADMIN_ID)
     @app_commands.command(
