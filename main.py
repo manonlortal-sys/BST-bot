@@ -4,7 +4,10 @@ import logging
 
 import discord
 from discord.ext import commands
+from discord import app_commands
 from aiohttp import web
+
+from cogs.utils import ROLE_ADMIN_ID, PING_BUTTON_EMOJI_ID
 
 logging.basicConfig(level=logging.INFO)
 
@@ -18,18 +21,98 @@ INTENTS.message_content = False  # on n'utilise pas de commandes préfixées ici
 bot = commands.Bot(command_prefix="!", intents=INTENTS)
 
 
+# --- Vue du panel Ping/Test ---
+
+
+class PingPanelView(discord.ui.View):
+    def __init__(self, bot: commands.Bot):
+        super().__init__(timeout=None)
+        self.bot = bot
+
+    @discord.ui.button(
+        label="Ping!",
+        style=discord.ButtonStyle.danger,
+        custom_id="panel_ping",
+        emoji=discord.PartialEmoji(id=PING_BUTTON_EMOJI_ID),
+    )
+    async def ping_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        alerts_cog = self.bot.get_cog("Alerts")  # type: ignore
+        if not alerts_cog:
+            await interaction.response.send_message(
+                "Système d'alertes indisponible.", ephemeral=True
+            )
+            return
+
+        await alerts_cog.handle_ping_button(interaction, is_test=False)  # type: ignore
+
+    @discord.ui.button(
+        label="Test",
+        style=discord.ButtonStyle.primary,
+        custom_id="panel_test",
+        emoji="⚠️",
+    )
+    async def test_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        # Vérification admin ici
+        if not isinstance(interaction.user, discord.Member) or not any(
+            r.id == ROLE_ADMIN_ID for r in interaction.user.roles
+        ):
+            await interaction.response.send_message(
+                "Ce bouton est réservé aux administrateurs.", ephemeral=True
+            )
+            return
+
+        alerts_cog = self.bot.get_cog("Alerts")  # type: ignore
+        if not alerts_cog:
+            await interaction.response.send_message(
+                "Système d'alertes indisponible.", ephemeral=True
+            )
+            return
+
+        await alerts_cog.handle_ping_button(interaction, is_test=True)  # type: ignore
+
+
+# on crée la vue ici pour la réutiliser partout
+panel_view = PingPanelView(bot)
+
+
 @bot.event
 async def on_ready():
     print(f"Connecté en tant que {bot.user} (ID: {bot.user.id})")
+
+    # on ré-attache la vue persistante après un redémarrage
+    bot.add_view(panel_view)
+
     try:
-        # Sync global des commandes (recommandé)
-        await bot.tree.sync()
-        print("Commandes slash synchronisées (globalement).")
+        # Sync global des slash commands
+        synced = await bot.tree.sync()
+        print(f"Commandes slash synchronisées ({len(synced)} commandes).")
     except Exception as e:
         print(f"Erreur de sync des commandes : {e}")
 
 
+# --- Slash command /ping ---
+
+
+@bot.tree.command(
+    name="ping",
+    description="Afficher le panel d'alerte défense percepteurs.",
+)
+@app_commands.checks.has_role(ROLE_ADMIN_ID)
+async def ping_command(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="🚨 ALERTE DÉFENSE PERCEPTEURS 🚨",
+        description='📣 Clique sur le bouton "Ping!" pour générer une alerte de défense percepteurs !',
+        color=discord.Color.red(),
+    )
+    await interaction.response.send_message(embed=embed, view=panel_view)
+
+
 # --- Petit serveur web pour Render / UptimeRobot ---
+
 
 async def handle_root(request: web.Request) -> web.Response:
     return web.Response(text="OK")
@@ -49,6 +132,7 @@ async def start_web_server():
 
 # --- Démarrage bot + serveur web ---
 
+
 async def main():
     token = os.getenv("DISCORD_TOKEN")
     if not token:
@@ -58,7 +142,7 @@ async def main():
         "cogs.alerts",
         "cogs.leaderboard",
         "cogs.reactions",
-        "cogs.ping_panel",
+        # plus de cogs.ping_panel ici
     ]
 
     # Serveur web pour Render / UptimeRobot
