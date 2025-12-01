@@ -33,7 +33,8 @@ class PingPanelView(discord.ui.View):
         label="Ping!",
         style=discord.ButtonStyle.danger,
         custom_id="panel_ping",
-        emoji=discord.PartialEmoji(id=PING_BUTTON_EMOJI_ID),
+        emoji=discord.PartialEmoji(name="pingemoji", id=PING_BUTTON_EMOJI_ID),
+
     )
     async def ping_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
