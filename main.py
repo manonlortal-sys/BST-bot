@@ -19,8 +19,8 @@ INTENTS.reactions = True
 
 bot = commands.Bot(command_prefix="!", intents=INTENTS)
 
-# Vue persistante du panel (initialisée dans on_ready)
-panel_view: "PingPanelView | None" = None
+# Vue persistante du panel (initialisée plus tard)
+panel_view = None  # type: ignore
 
 
 class PingPanelView(discord.ui.View):
@@ -55,7 +55,7 @@ class PingPanelView(discord.ui.View):
     async def test_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
-        # Vérification admin ici
+        # Vérification admin
         if not isinstance(interaction.user, discord.Member) or not any(
             r.id == ROLE_ADMIN_ID for r in interaction.user.roles
         ):
@@ -80,16 +80,14 @@ async def on_ready():
 
     print(f"Connecté en tant que {bot.user} (ID: {bot.user.id})")
 
-    # Créer la vue ici (la loop existe)
+    # Créer et enregistrer la vue persistante UNE FOIS
     if panel_view is None:
         panel_view = PingPanelView(bot)
         bot.add_view(panel_view)
 
     try:
         synced = await bot.tree.sync()
-        print(f"Commandes slash synchronisées ({len(synced)} commandes).")
-        for cmd in synced:
-            print(f"- /{cmd.name}")
+        print(f"Commandes slash synchronisées ({len(synced)} commandes) : {[cmd.name for cmd in synced]}")
     except Exception as e:
         print(f"Erreur de sync des commandes : {e}")
 
@@ -97,14 +95,15 @@ async def on_ready():
 # --- Slash command /ping ---
 
 
-@app_commands.checks.has_role(ROLE_ADMIN_ID)
 @bot.tree.command(
     name="ping",
     description="Afficher le panel d'alerte défense percepteurs.",
 )
+@app_commands.checks.has_role(ROLE_ADMIN_ID)
 async def ping_command(interaction: discord.Interaction):
     global panel_view
 
+    # Sécurité : si pour une raison quelconque la vue n'existe pas encore
     if panel_view is None:
         panel_view = PingPanelView(bot)
         bot.add_view(panel_view)
