@@ -62,8 +62,13 @@ class PingPanel(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.view = PingPanelView(bot)
-        # Vue persistante pour que les boutons du panel restent actifs
+
+        # Vue persistante pour que les boutons restent actifs
         bot.add_view(self.view)
+
+        # 💡 Enregistrement explicite de la commande slash dans le CommandTree
+        # (ce qui semble ne pas bien se faire automatiquement chez toi)
+        self.bot.tree.add_command(self.ping_command)
 
     @app_commands.checks.has_role(ROLE_ADMIN_ID)
     @app_commands.command(
@@ -81,4 +86,3 @@ class PingPanel(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(PingPanel(bot))
-
