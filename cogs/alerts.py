@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from typing import Optional, List
 
 import discord
@@ -11,6 +10,7 @@ from .utils import (
     AlertData,
     ROLE_MEMBRES_ID,
     ROLE_TEST_ID,
+    ROLE_ADMIN_ID,
     PING_COOLDOWN_SECONDS,
     now_ts,
     format_attack_time,
@@ -161,8 +161,7 @@ class Alerts(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.alert_view = AlertView(bot)
-        # Vue persistante pour que les boutons continuent de marcher après un redémarrage
-        bot.add_view(self.alert_view)
+        bot.add_view(self.alert_view)  # vue persistante
 
     # --- Construction / mise à jour de l'embed ---
 
@@ -256,25 +255,19 @@ class Alerts(commands.Cog):
         state = get_state(self.bot)
         user = interaction.user
 
-        # Bouton Test : réservé aux admins (vérif ailleurs si besoin aussi)
+        # Bouton Test : réservé aux admins
         if is_test:
-            has_admin = False
-            if isinstance(user, discord.Member):
-                has_admin = any(
-                    r.id == ROLE_TEST_ID or r.id == ROLE_MEMBRES_ID or r.id == ROLE_ADMIN_ID
-                    for r in user.roles
-                )
-            # Tu avais demandé "seul rôle Admin pour Test" => on force admin ici
-            if isinstance(user, discord.Member):
-                has_admin = any(r.id == ROLE_ADMIN_ID for r in user.roles)
-            if not has_admin:
+            if not isinstance(user, discord.Member) or not any(
+                r.id == ROLE_ADMIN_ID for r in user.roles
+            ):
                 await interaction.response.send_message(
                     "Ce bouton est réservé aux administrateurs.", ephemeral=True
                 )
                 return
         else:
             # Cooldown global uniquement pour Ping! (pas Test)
-            now = time.time()
+            import time as _time
+            now = _time.time()
             if (
                 state.last_ping_timestamp is not None
                 and now - state.last_ping_timestamp < PING_COOLDOWN_SECONDS
@@ -305,12 +298,10 @@ class Alerts(commands.Cog):
             return
 
         if is_test:
-            role_id = ROLE_TEST_ID
             role_mention = f"<@&{ROLE_TEST_ID}>"
             text = f"{role_mention} Alerte de test déclenchée."
             role_kind = "test"
         else:
-            role_id = ROLE_MEMBRES_ID
             role_mention = f"<@&{ROLE_MEMBRES_ID}>"
             text = f"🚨{role_mention} un percepteur se fait attaquer ! Merci de vous connecter ! 🚨"
             role_kind = "members"
@@ -396,4 +387,3 @@ class Alerts(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Alerts(bot))
-
