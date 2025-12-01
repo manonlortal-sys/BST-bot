@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Dict, Set, Optional
-
 import time
 
 # IDs de rôles
@@ -57,5 +56,5 @@ def now_ts() -> int:
 
 
 def format_attack_time(ts: int) -> str:
-    # Affichage Discord : <t:timestamp:f> -> date/heure locale de l'utilisateur
+    # Affichage Discord : <t:timestamp:f>
     return f"<t:{ts}:f>"
