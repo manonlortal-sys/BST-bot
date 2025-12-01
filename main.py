@@ -21,10 +21,13 @@ bot = commands.Bot(command_prefix="!", intents=INTENTS)
 async def on_ready():
     print(f"Connecté en tant que {bot.user} (ID: {bot.user.id})")
     try:
-        await bot.tree.sync()
-        print("Commandes slash synchronisées.")
+        # Sync des commandes pour chaque serveur où est le bot
+        for guild in bot.guilds:
+            await bot.tree.sync(guild=guild)
+            print(f"Commandes slash synchronisées pour : {guild.name} ({guild.id})")
     except Exception as e:
         print(f"Erreur de sync des commandes : {e}")
+
 
 
 # --- Petit serveur web pour Render / UptimeRobot ---
