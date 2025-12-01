@@ -16,12 +16,11 @@ INTENTS.guilds = True
 INTENTS.members = True
 INTENTS.messages = True
 INTENTS.reactions = True
-INTENTS.message_content = False  # on n'utilise pas de commandes préfixées ici
 
 bot = commands.Bot(command_prefix="!", intents=INTENTS)
 
-
-# --- Vue du panel Ping/Test ---
+# Vue persistante du panel (initialisée dans on_ready)
+panel_view: "PingPanelView | None" = None
 
 
 class PingPanelView(discord.ui.View):
@@ -34,7 +33,6 @@ class PingPanelView(discord.ui.View):
         style=discord.ButtonStyle.danger,
         custom_id="panel_ping",
         emoji=discord.PartialEmoji(name="pingemoji", id=PING_BUTTON_EMOJI_ID),
-
     )
     async def ping_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
@@ -76,19 +74,18 @@ class PingPanelView(discord.ui.View):
         await alerts_cog.handle_ping_button(interaction, is_test=True)  # type: ignore
 
 
-# on crée la vue ici pour la réutiliser partout
-panel_view = PingPanelView(bot)
-
-
 @bot.event
 async def on_ready():
+    global panel_view
+
     print(f"Connecté en tant que {bot.user} (ID: {bot.user.id})")
 
-    # on ré-attache la vue persistante après un redémarrage
-    bot.add_view(panel_view)
+    # Créer la vue ici (la loop tourne à ce moment-là)
+    if panel_view is None:
+        panel_view = PingPanelView(bot)
+        bot.add_view(panel_view)
 
     try:
-        # Sync global des slash commands
         synced = await bot.tree.sync()
         print(f"Commandes slash synchronisées ({len(synced)} commandes).")
     except Exception as e:
@@ -104,6 +101,13 @@ async def on_ready():
 )
 @app_commands.checks.has_role(ROLE_ADMIN_ID)
 async def ping_command(interaction: discord.Interaction):
+    global panel_view
+
+    # sécurité : au cas où on_ready n’aurait pas encore tourné
+    if panel_view is None:
+        panel_view = PingPanelView(bot)
+        bot.add_view(panel_view)
+
     embed = discord.Embed(
         title="🚨 ALERTE DÉFENSE PERCEPTEURS 🚨",
         description='📣 Clique sur le bouton "Ping!" pour générer une alerte de défense percepteurs !',
@@ -143,10 +147,8 @@ async def main():
         "cogs.alerts",
         "cogs.leaderboard",
         "cogs.reactions",
-        # plus de cogs.ping_panel ici
     ]
 
-    # Serveur web pour Render / UptimeRobot
     await start_web_server()
 
     async with bot:
