@@ -1,22 +1,50 @@
 import os
+import threading
+from flask import Flask
 import discord
 from discord.ext import commands
 
-TOKEN = os.getenv("DISCORD_TOKEN")
-# ou TOKEN = "TON_TOKEN"
+app = Flask(__name__)
+
+@app.get("/")
+def home():
+    return "Bot copie actif"
+
+def run_flask():
+    port = int(os.getenv("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port)
+
+threading.Thread(target=run_flask, daemon=True).start()
+
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+if not DISCORD_TOKEN:
+    raise SystemExit("Missing DISCORD_TOKEN")
 
 intents = discord.Intents.default()
+intents.guilds = True
+intents.members = True
+intents.messages = True
+intents.reactions = True
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
+async def setup_hook():
+    print("🚀 setup_hook…")
+    for ext in [
+        "cogs.copie",
+    ]:
+        try:
+            await bot.load_extension(ext)
+            print(f"OK {ext}")
+        except Exception as e:
+            print(f"ERREUR {ext} →", e)
+
+@bot.event
 async def on_ready():
     print(f"Connecté en tant que {bot.user}")
 
-async def setup():
-    await bot.load_extension("cogs.copie")
-    await bot.start(TOKEN)
-
-import asyncio
-asyncio.run(setup())
+if __name__ == "__main__":
+    print("⚡ Booting copie bot…")
+    bot.run(DISCORD_TOKEN)
