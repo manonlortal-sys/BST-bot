@@ -1,5 +1,6 @@
 import discord
-from datetime import timezone, datetime
+from discord.ext import commands
+from datetime import timezone
 
 SOURCE_CHANNEL_IDS = {
     1455171459507949581,
@@ -18,22 +19,22 @@ def is_image(att: discord.Attachment) -> bool:
     )
 
 
-def setup_copie(bot):
+class Copie(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
 
-    @bot.event
-    async def on_message(message: discord.Message):
-        await bot.process_commands(message)
-
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
 
         if message.channel.id not in SOURCE_CHANNEL_IDS:
             return
 
-        dest_channel = bot.get_channel(DESTINATION_CHANNEL_ID)
+        dest_channel = self.bot.get_channel(DESTINATION_CHANNEL_ID)
         if dest_channel is None:
             try:
-                dest_channel = await bot.fetch_channel(DESTINATION_CHANNEL_ID)
+                dest_channel = await self.bot.fetch_channel(DESTINATION_CHANNEL_ID)
             except Exception:
                 return
 
@@ -60,7 +61,6 @@ def setup_copie(bot):
             inline=True
         )
 
-        # image principale
         first_image = None
         for att in message.attachments:
             if is_image(att):
@@ -79,7 +79,8 @@ def setup_copie(bot):
             except Exception:
                 pass
 
-        await dest_channel.send(
-            embed=embed,
-            files=files if files else None
-        )
+        await dest_channel.send(embed=embed, files=files if files else None)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(Copie(bot))
