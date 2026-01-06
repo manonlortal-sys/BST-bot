@@ -3,8 +3,6 @@ from discord.ext import commands
 from discord import app_commands
 import uuid
 
-CAFARD_ROLE_ID = 1449031629753286726
-
 cafards = {}     # cafard_id -> {question, answer}
 votes = {}       # (cafard_id, user_id) -> bool
 points = {}      # user_id -> int
@@ -53,13 +51,13 @@ class CafardCog(commands.Cog):
         )
 
     # ================= /CLASSEMENT =================
-    @app_commands.command(name="classement", description="Classement des cafards")
+    @app_commands.command(name="classement", description="Classement des cafards (Top 10)")
     async def classement(self, interaction: discord.Interaction):
         if not points:
             await interaction.response.send_message("🪳 Aucun point pour l’instant")
             return
 
-        sorted_points = sorted(points.items(), key=lambda x: x[1], reverse=True)
+        sorted_points = sorted(points.items(), key=lambda x: x[1], reverse=True)[:10]
         lines = []
 
         for i, (uid, pts) in enumerate(sorted_points, start=1):
@@ -69,10 +67,10 @@ class CafardCog(commands.Cog):
             except:
                 name = f"Utilisateur {uid}"
 
-            lines.append(f"{i}️⃣ {name} — {pts} 🪳")
+            lines.append(f"{i}. {name} — {pts} 🪳")
 
         await interaction.response.send_message(
-            "🏆 **Classement des cafards**\n\n" + "\n".join(lines)
+            "🏆 **Classement des cafards (Top 10)**\n\n" + "\n".join(lines)
         )
 
 
@@ -125,10 +123,8 @@ class ValidationView(discord.ui.View):
         cafard_id = str(uuid.uuid4())
         cafards[cafard_id] = data
 
-        role = interaction.guild.get_role(CAFARD_ROLE_ID)
-
         await interaction.channel.send(
-            f"🪳 {role.mention}\n\n**{data['question']}**\n\nVotez une seule fois 👇",
+            f"🪳 **{data['question']}**\n\nVotez une seule fois 👇",
             view=VoteView(cafard_id)
         )
 
