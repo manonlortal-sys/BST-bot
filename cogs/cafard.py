@@ -5,17 +5,17 @@ import uuid
 
 CAFARD_ROLE_ID = 1449031629753286726
 
-cafards = {}
-votes = {}
-points = {}
-pending = {}
+cafards = {}     # cafard_id -> {question, answer}
+votes = {}       # (cafard_id, user_id) -> bool
+points = {}      # user_id -> int
+pending = {}     # user_id -> temp cafard
 
 
 class CafardCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    # ---------- /CAFARD ----------
+    # ================= /CAFARD =================
     @app_commands.command(name="cafard", description="Créer un cafard")
     async def cafard(self, interaction: discord.Interaction, question: str):
         pending[interaction.user.id] = {"question": question}
@@ -28,7 +28,31 @@ class CafardCog(commands.Cog):
             view=AnswerSelectView(interaction.user.id)
         )
 
-    # ---------- /CLASSEMENT ----------
+    # ================= /QUIZ =================
+    @app_commands.command(name="quiz", description="Répondre aux cafards non faits")
+    async def quiz(self, interaction: discord.Interaction):
+        user_id = interaction.user.id
+        remaining = [cid for cid in cafards if (cid, user_id) not in votes]
+
+        if not remaining:
+            await interaction.response.send_message(
+                "🎉 Tu as répondu à tous les cafards disponibles !",
+                ephemeral=True
+            )
+            return
+
+        view = QuizView(user_id, remaining)
+        cid = remaining[0]
+
+        await interaction.response.send_message(
+            f"🪳 **Quiz cafard**\n\n"
+            f"**Question 1 / {len(remaining)}**\n"
+            f"{cafards[cid]['question']}",
+            ephemeral=True,
+            view=view
+        )
+
+    # ================= /CLASSEMENT =================
     @app_commands.command(name="classement", description="Classement des cafards")
     async def classement(self, interaction: discord.Interaction):
         if not points:
@@ -37,9 +61,14 @@ class CafardCog(commands.Cog):
 
         sorted_points = sorted(points.items(), key=lambda x: x[1], reverse=True)
         lines = []
+
         for i, (uid, pts) in enumerate(sorted_points, start=1):
-            user = self.bot.get_user(uid)
-            name = user.display_name if user else str(uid)
+            try:
+                user = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
+                name = user.display_name
+            except:
+                name = f"Utilisateur {uid}"
+
             lines.append(f"{i}️⃣ {name} — {pts} 🪳")
 
         await interaction.response.send_message(
@@ -142,6 +171,56 @@ class VoteView(discord.ui.View):
     @discord.ui.button(label="Non", style=discord.ButtonStyle.danger)
     async def no(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._vote(interaction, False)
+
+
+class QuizView(discord.ui.View):
+    def __init__(self, user_id, cafard_ids):
+        super().__init__(timeout=300)
+        self.user_id = user_id
+        self.cafard_ids = cafard_ids
+        self.index = 0
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.user_id
+
+    async def _answer(self, interaction: discord.Interaction, value: bool):
+        cid = self.cafard_ids[self.index]
+        votes[(cid, self.user_id)] = value
+
+        correct = cafards[cid]["answer"] == value
+        if correct:
+            points[self.user_id] = points.get(self.user_id, 0) + 1
+            feedback = "🎉 Bonne réponse ! +1 🪳"
+        else:
+            feedback = "❌ Mauvaise réponse"
+
+        self.index += 1
+
+        if self.index >= len(self.cafard_ids):
+            await interaction.response.edit_message(
+                content=f"🏁 **Quiz terminé !**\n\n{feedback}",
+                view=None
+            )
+            return
+
+        next_cid = self.cafard_ids[self.index]
+        await interaction.response.edit_message(
+            content=(
+                f"{feedback}\n\n"
+                f"🪳 **Quiz cafard**\n\n"
+                f"**Question {self.index + 1} / {len(self.cafard_ids)}**\n"
+                f"{cafards[next_cid]['question']}"
+            ),
+            view=self
+        )
+
+    @discord.ui.button(label="Oui", style=discord.ButtonStyle.success)
+    async def yes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._answer(interaction, True)
+
+    @discord.ui.button(label="Non", style=discord.ButtonStyle.danger)
+    async def no(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._answer(interaction, False)
 
 
 async def setup(bot):
