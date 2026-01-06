@@ -5,7 +5,10 @@ from discord.ext import commands
 INTENTS = discord.Intents.default()
 INTENTS.message_content = True
 
-bot = commands.Bot(intents=INTENTS)
+bot = commands.Bot(
+    command_prefix="!",  # obligatoire même si inutilisé
+    intents=INTENTS
+)
 
 @bot.event
 async def on_ready():
