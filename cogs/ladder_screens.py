@@ -11,6 +11,9 @@ SCREEN_CHANNELS = {
 
 LADDER_ROLE_ID = 1459190410835660831
 
+# Verrou global anti-doublon
+SEEN_MESSAGES = set()
+
 # screen_message_id -> state
 SCREEN_STATES = {}  # pending | validated | refused
 
@@ -76,20 +79,21 @@ class LadderScreens(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # 🔒 1. ignorer les messages du bot
+        # 🔒 ignorer messages du bot
         if message.author.bot:
             return
 
-        # 🔒 2. ignorer hors canaux ladder
+        # 🔒 verrou immédiat anti-doublon (CRITIQUE)
+        if message.id in SEEN_MESSAGES:
+            return
+        SEEN_MESSAGES.add(message.id)
+
+        # 🔒 ignorer hors canaux ladder
         if message.channel.id not in SCREEN_CHANNELS:
             return
 
-        # 🔒 3. déjà traité
+        # 🔒 déjà traité
         if message.id in SCREEN_STATES:
-            return
-
-        # 🔒 4. ignorer les messages avec view (évite l’auto-déclenchement)
-        if message.components:
             return
 
         # 🔍 détection image
@@ -109,7 +113,7 @@ class LadderScreens(commands.Cog):
         if not has_image:
             return
 
-        # ✅ marquer le screen comme pending
+        # ✅ screen détecté
         SCREEN_STATES[message.id] = "pending"
 
         await message.channel.send(
