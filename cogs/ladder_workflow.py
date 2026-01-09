@@ -3,13 +3,15 @@ from discord.ext import commands
 import json
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 LADDER_ROLE_ID = 1459190410835660831
 DATA_FILE = "data/ladder.json"
+TZ = ZoneInfo("Europe/Paris")
 
 
 def current_period():
-    now = datetime.utcnow()
+    now = datetime.now(TZ)
     if now.day < 15:
         return f"{now.year}-{now.month:02d}-01_14"
     return f"{now.year}-{now.month:02d}-15_end"
@@ -29,10 +31,9 @@ def save_data(data):
 
 
 class TypeView(discord.ui.View):
-    def __init__(self, bot, screen_msg):
+    def __init__(self, bot):
         super().__init__(timeout=300)
         self.bot = bot
-        self.screen_msg = screen_msg
 
     async def interaction_check(self, interaction):
         return any(r.id == LADDER_ROLE_ID for r in interaction.user.roles)
@@ -109,17 +110,20 @@ class ConfigView(discord.ui.View):
 
         save_data(data)
 
-        recap_lines = [f"{u.mention} +{points} pts" for u in self.players]
+        lines = [
+            f"{user.display_name} +{points} pts"
+            for user in self.players
+        ]
 
-        recap_message = (
+        recap = (
             "🧾 **Récap Ladder**\n"
             f"Type : {self.combat_type}\n"
             f"Configuration : {label}\n"
             f"Validé par : {self.validator_name}\n\n"
-            + "\n".join(recap_lines)
+            + "\n".join(lines)
         )
 
-        await interaction.channel.send(recap_message)
+        await interaction.channel.send(recap)
 
         leaderboard = self.bot.get_cog("LadderLeaderboard")
         if leaderboard:
@@ -144,7 +148,7 @@ class LadderWorkflow(commands.Cog):
     async def start(self, interaction: discord.Interaction, screen_msg):
         await interaction.followup.send(
             "Type de combat ?",
-            view=TypeView(self.bot, screen_msg),
+            view=TypeView(self.bot),
             ephemeral=True,
         )
 
