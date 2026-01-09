@@ -37,6 +37,7 @@ class CafardBot(commands.Bot):
             "cogs.ladder_screens",
             "cogs.ladder_workflow",
             "cogs.ladder_leaderboard",
+            "cogs.ladder_joueurs",
             # plus tard :
             # "cogs.ladder_validation",
             # "cogs.ladder_leaderboard",
