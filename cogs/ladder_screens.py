@@ -11,33 +11,68 @@ SCREEN_CHANNELS = {
 
 LADDER_ROLE_ID = 1459190410835660831
 
+# message_id (screen) -> state
+SCREEN_STATES = {}  # "pending" | "validated" | "refused"
+
 
 class ValidationView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, screen_message_id: int):
         super().__init__(timeout=None)
+        self.screen_message_id = screen_message_id
+
+    def _has_permission(self, interaction: discord.Interaction) -> bool:
+        return any(r.id == LADDER_ROLE_ID for r in interaction.user.roles)
 
     @discord.ui.button(label="Valider", style=discord.ButtonStyle.success)
-    async def validate(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not any(r.id == LADDER_ROLE_ID for r in interaction.user.roles):
+    async def validate(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+        if not self._has_permission(interaction):
             await interaction.response.send_message(
-                "Tu n’as pas le rôle requis pour valider.",
+                "Tu n’as pas le rôle Ladder.",
                 ephemeral=True,
             )
             return
 
+        state = SCREEN_STATES.get(self.screen_message_id)
+        if state != "pending":
+            await interaction.response.send_message(
+                "Ce screen est déjà traité.",
+                ephemeral=True,
+            )
+            return
+
+        SCREEN_STATES[self.screen_message_id] = "validated"
+
         await interaction.response.send_message(
-            "Validation lancée (étape suivante à venir).",
+            "Screen validé. (Étape suivante à venir)",
             ephemeral=True,
         )
 
     @discord.ui.button(label="Refuser", style=discord.ButtonStyle.danger)
-    async def refuse(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not any(r.id == LADDER_ROLE_ID for r in interaction.user.roles):
+    async def refuse(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+        if not self._has_permission(interaction):
             await interaction.response.send_message(
-                "Tu n’as pas le rôle requis pour refuser.",
+                "Tu n’as pas le rôle Ladder.",
                 ephemeral=True,
             )
             return
+
+        state = SCREEN_STATES.get(self.screen_message_id)
+        if state != "pending":
+            await interaction.response.send_message(
+                "Ce screen est déjà traité.",
+                ephemeral=True,
+            )
+            return
+
+        SCREEN_STATES[self.screen_message_id] = "refused"
 
         await interaction.response.send_message(
             "Screen refusé.",
@@ -57,6 +92,10 @@ class LadderScreens(commands.Cog):
         if message.channel.id not in SCREEN_CHANNELS:
             return
 
+        # Déjà traité
+        if message.id in SCREEN_STATES:
+            return
+
         has_image = False
 
         for attachment in message.attachments:
@@ -73,9 +112,11 @@ class LadderScreens(commands.Cog):
         if not has_image:
             return
 
+        SCREEN_STATES[message.id] = "pending"
+
         await message.channel.send(
             f"<@&{LADDER_ROLE_ID}> merci de valider ce screen",
-            view=ValidationView(),
+            view=ValidationView(message.id),
         )
 
 
