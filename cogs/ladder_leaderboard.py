@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 # =============================
 CHANNEL_LADDER_ID = 1459185721461051422
 DATA_FILE = "data/ladder.json"
+META_FILE = "data/ladder_meta.json"
 TZ = ZoneInfo("Europe/Paris")
 
 MOIS_FR = [
@@ -39,7 +40,6 @@ def period_label(period: str) -> str:
         end = f"14 {mois} {year}"
     else:
         start = f"15 {mois} {year}"
-        # dernier jour du mois
         if month_i == 12:
             last_day = 31
         else:
@@ -50,11 +50,17 @@ def period_label(period: str) -> str:
     return f"Période : du {start} au {end}"
 
 
-def load_data():
-    if not os.path.exists(DATA_FILE):
+def load_json(path):
+    if not os.path.exists(path):
         return {}
-    with open(DATA_FILE, "r") as f:
+    with open(path, "r") as f:
         return json.load(f)
+
+
+def save_json(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
 
 # =============================
@@ -64,12 +70,23 @@ class LadderLeaderboard(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.message_id: int | None = None
+        self._load_message_id()
 
     # -------------------------
-    # EMBED
+    # Persistance message_id
+    # -------------------------
+    def _load_message_id(self):
+        meta = load_json(META_FILE)
+        self.message_id = meta.get("message_id")
+
+    def _save_message_id(self):
+        save_json(META_FILE, {"message_id": self.message_id})
+
+    # -------------------------
+    # Embed
     # -------------------------
     def build_embed(self):
-        data = load_data()
+        data = load_json(DATA_FILE)
         period = current_period()
         scores = data.get(period, {})
 
@@ -100,7 +117,7 @@ class LadderLeaderboard(commands.Cog):
         return embed
 
     # -------------------------
-    # MESSAGE PERSISTANT
+    # Message ladder
     # -------------------------
     async def ensure_message(self):
         channel = self.bot.get_channel(CHANNEL_LADDER_ID)
@@ -117,6 +134,7 @@ class LadderLeaderboard(commands.Cog):
         embed = self.build_embed()
         msg = await channel.send(embed=embed)
         self.message_id = msg.id
+        self._save_message_id()
 
     async def update_leaderboard(self):
         channel = self.bot.get_channel(CHANNEL_LADDER_ID)
@@ -146,7 +164,7 @@ class LadderLeaderboard(commands.Cog):
         )
 
     # -------------------------
-    # EVENTS
+    # Events
     # -------------------------
     @commands.Cog.listener()
     async def on_ready(self):
