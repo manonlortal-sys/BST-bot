@@ -34,7 +34,9 @@ class CafardBot(commands.Bot):
         # 🔹 Charge tous les cogs nécessaires
         for ext in [
             "cogs.cafard",
-            "cogs.ladder_screens",   # détection des screens
+            "cogs.ladder_screens",
+            "cogs.ladder_workflow",
+            "cogs.ladder_leaderboard",
             # plus tard :
             # "cogs.ladder_validation",
             # "cogs.ladder_leaderboard",
