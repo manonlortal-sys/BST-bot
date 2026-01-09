@@ -40,13 +40,10 @@ def period_dates(period: str):
         end = f"14 {mois} {year}"
     else:
         start = f"15 {mois} {year}"
-
-        # calcul du dernier jour du mois (FIABLE)
         if month == 12:
             next_month = datetime(year + 1, 1, 1, tzinfo=TZ)
         else:
             next_month = datetime(year, month + 1, 1, tzinfo=TZ)
-
         last_day = (next_month - timedelta(days=1)).day
         end = f"{last_day} {mois} {year}"
 
@@ -97,58 +94,40 @@ class LadderLeaderboard(commands.Cog):
         scores = data.get(period, {})
 
         start, end = period_dates(period)
-
         title = title_override or "🏆 LADDER GÉNÉRAL PVP 🏆"
 
-        embed = discord.Embed(
-            title=title,
-            color=discord.Color.gold()
-        )
-
+        embed = discord.Embed(title=title, color=discord.Color.gold())
         embed.set_footer(text=f"Période : du {start} au {end}")
 
         if not scores:
             embed.description = "Aucun point pour cette période."
             return embed
 
-        sorted_scores = sorted(
-            scores.items(),
-            key=lambda x: x[1],
-            reverse=True
-        )
-
+        sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
         if limit:
             sorted_scores = sorted_scores[:limit]
 
-        lines = []
-        for i, (uid, pts) in enumerate(sorted_scores, start=1):
-            user = self.bot.get_user(int(uid))
-            name = user.display_name if user else f"Utilisateur {uid}"
-            lines.append(f"{i}. {name} — {pts} pts")
-
-        embed.description = "\n".join(lines)
+        embed.description = "\n".join(
+            f"{i}. {(self.bot.get_user(int(uid)) or uid).display_name} — {pts} pts"
+            for i, (uid, pts) in enumerate(sorted_scores, start=1)
+        )
         return embed
 
     # -------------------------
-    # FIGEAGE
+    # FIGEAGE (APPEL EXPLICITE)
     # -------------------------
     async def check_period_change(self):
         current = current_period()
-
         if self.last_period and self.last_period != current:
             channel = self.bot.get_channel(CHANNEL_LADDER_ID)
             if channel:
                 start, end = period_dates(self.last_period)
                 title = f"🏆 LADDER DU {start} AU {end} 🏆"
-                frozen = self.build_embed(
-                    self.last_period,
-                    limit=None,
-                    title_override=title
-                )
+                frozen = self.build_embed(self.last_period, limit=None, title_override=title)
                 await channel.send(embed=frozen)
 
-        self.last_period = current
-        self._save_meta()
+            self.last_period = current
+            self._save_meta()
 
     # -------------------------
     # MESSAGE PERSISTANT
@@ -170,14 +149,12 @@ class LadderLeaderboard(commands.Cog):
         self._save_meta()
 
     async def update_leaderboard(self):
-        await self.check_period_change()
+        await self.ensure_message()
+        if not self.message_id:
+            return
 
         channel = self.bot.get_channel(CHANNEL_LADDER_ID)
         if not channel:
-            return
-
-        await self.ensure_message()
-        if not self.message_id:
             return
 
         try:
@@ -195,16 +172,13 @@ class LadderLeaderboard(commands.Cog):
     @app_commands.command(name="ladder", description="Afficher le ladder actuel")
     async def ladder(self, interaction: discord.Interaction):
         await self.check_period_change()
-        await interaction.response.send_message(
-            embed=self.build_embed(current_period())
-        )
+        await interaction.response.send_message(embed=self.build_embed(current_period()))
 
     # -------------------------
     # EVENTS
     # -------------------------
     @commands.Cog.listener()
     async def on_ready(self):
-        await self.check_period_change()
         await self.ensure_message()
         await self.update_leaderboard()
 
