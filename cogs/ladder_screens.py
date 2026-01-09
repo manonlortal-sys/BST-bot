@@ -22,6 +22,10 @@ class ScreenValidationView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return any(r.id == LADDER_ROLE_ID for r in interaction.user.roles)
 
+    def _disable_buttons(self):
+        for item in self.children:
+            item.disabled = True
+
     @discord.ui.button(label="Valider", style=discord.ButtonStyle.success)
     async def validate(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.locked:
@@ -31,11 +35,11 @@ class ScreenValidationView(discord.ui.View):
             )
             return
 
-        # ✅ ACK IMMÉDIAT (OBLIGATOIRE)
+        # ✅ ACK immédiat obligatoire
         await interaction.response.defer(ephemeral=True)
 
         self.locked = True
-        self.disable_all_items()
+        self._disable_buttons()
         await interaction.message.edit(view=self)
 
         workflow = self.bot.get_cog("LadderWorkflow")
@@ -46,7 +50,7 @@ class ScreenValidationView(discord.ui.View):
             )
             return
 
-        # 🔗 Lancement du workflow complet
+        # 🔗 Lancement du workflow
         await workflow.start(interaction, self.screen_message)
 
     @discord.ui.button(label="Refuser", style=discord.ButtonStyle.danger)
@@ -61,7 +65,7 @@ class ScreenValidationView(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
 
         self.locked = True
-        self.disable_all_items()
+        self._disable_buttons()
         await interaction.message.edit(view=self)
 
         await interaction.followup.send(
@@ -77,7 +81,7 @@ class LadderScreens(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # Ignorer messages bot
+        # Ignorer messages du bot
         if message.author.bot:
             return
 
@@ -85,7 +89,7 @@ class LadderScreens(commands.Cog):
         if message.channel.id not in SCREEN_CHANNELS:
             return
 
-        # Anti-doublon STRICT
+        # Anti-doublon strict
         if message.id in self.seen_messages:
             return
         self.seen_messages.add(message.id)
