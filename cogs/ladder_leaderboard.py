@@ -1,129 +1,120 @@
 import discord
-from discord.ext import commands, tasks
-from discord import app_commands
+from discord.ext import commands
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
-LEADERBOARD_CHANNEL_ID = 1459185721461051422
+CHANNEL_LADDER_ID = 1459185721461051422
 DATA_FILE = "data/ladder.json"
-META_FILE = "data/ladder_meta.json"
 TZ = ZoneInfo("Europe/Paris")
 
 
-def current_period(now=None):
-    if not now:
-        now = datetime.now(TZ)
-
-    start_day = 1 if now.day < 15 else 15
-    start = now.replace(day=start_day, hour=0, minute=0, second=0, microsecond=0)
-
-    if start_day == 1:
-        end = start.replace(day=14, hour=23, minute=59, second=59)
-    else:
-        next_month = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
-        end = next_month - timedelta(seconds=1)
-
-    key = f"{start.strftime('%Y-%m-%d')}__{end.strftime('%Y-%m-%d')}"
-    label = f"{start.strftime('%d %B %Y')} → {end.strftime('%d %B %Y')}"
-
-    return key, label, start, end
-
-
-def load_json(path):
-    if not os.path.exists(path):
-        return {}
-    with open(path, "r") as f:
-        return json.load(f)
-
-
-def save_json(path, data):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+def current_period():
+    now = datetime.now(TZ)
+    if now.day < 15:
+        return f"{now.year}-{now.month:02d}-01_14"
+    return f"{now.year}-{now.month:02d}-15_end"
 
 
 class LadderLeaderboard(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.message_id = None
-        self.check_reset.start()
+        self.message_id: int | None = None
 
-    def build_embed(self, period_key, period_label, scores):
-        sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:20]
+    # -------------------------
+    # Utils JSON
+    # -------------------------
+    def load_data(self):
+        if not os.path.exists(DATA_FILE):
+            return {}
+        with open(DATA_FILE, "r") as f:
+            return json.load(f)
 
-        desc = "\n".join(
-            f"{i+1}. <@{uid}> — {pts} pts"
-            for i, (uid, pts) in enumerate(sorted_scores)
-        ) or "Aucun point pour cette période."
+    # -------------------------
+    # Embed
+    # -------------------------
+    def build_embed(self):
+        data = self.load_data()
+        period = current_period()
+        scores = data.get(period, {})
 
         embed = discord.Embed(
             title="LADDER GÉNÉRAL PVP",
-            description=desc,
-            color=discord.Color.gold(),
+            color=discord.Color.gold()
         )
 
-        embed.set_footer(text=f"Période : {period_label}")
+        start, end = (
+            (1, 14) if "01_14" in period else (15, "fin")
+        )
+        embed.set_footer(
+            text=f"Période : {start} → {end}"
+        )
+
+        if not scores:
+            embed.description = "Aucun point pour cette période."
+            return embed
+
+        sorted_scores = sorted(
+            scores.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )[:20]
+
+        lines = []
+        for i, (uid, pts) in enumerate(sorted_scores, start=1):
+            user = self.bot.get_user(int(uid))
+            name = user.display_name if user else f"Utilisateur {uid}"
+            lines.append(f"{i}. {name} — {pts} pts")
+
+        embed.description = "\n".join(lines)
         return embed
 
-    async def update_leaderboard(self):
-        data = load_json(DATA_FILE)
-        period_key, period_label, _, _ = current_period()
-        scores = data.get(period_key, {})
-
-        embed = self.build_embed(period_key, period_label, scores)
-        channel = self.bot.get_channel(LEADERBOARD_CHANNEL_ID)
-        if not isinstance(channel, discord.TextChannel):
+    # -------------------------
+    # Message management
+    # -------------------------
+    async def ensure_message(self):
+        channel = self.bot.get_channel(CHANNEL_LADDER_ID)
+        if not channel:
             return
 
         if self.message_id:
             try:
-                msg = await channel.fetch_message(self.message_id)
-                await msg.edit(embed=embed)
+                await channel.fetch_message(self.message_id)
                 return
             except discord.NotFound:
                 self.message_id = None
 
+        embed = self.build_embed()
         msg = await channel.send(embed=embed)
         self.message_id = msg.id
 
-    @tasks.loop(minutes=1)
-    async def check_reset(self):
-        now = datetime.now(TZ)
-        meta = load_json(META_FILE)
-        data = load_json(DATA_FILE)
-
-        period_key, period_label, start, _ = current_period(now)
-
-        last_frozen = meta.get("last_frozen")
-        if last_frozen == period_key:
+    async def update_leaderboard(self):
+        channel = self.bot.get_channel(CHANNEL_LADDER_ID)
+        if not channel:
             return
 
-        if now == start:
-            previous_key, previous_label, _, _ = current_period(start - timedelta(minutes=1))
-            scores = data.get(previous_key)
+        await self.ensure_message()
+        if not self.message_id:
+            return
 
-            if scores:
-                channel = self.bot.get_channel(LEADERBOARD_CHANNEL_ID)
-                if channel:
-                    embed = self.build_embed(previous_key, previous_label, scores)
-                    await channel.send("📌 **Classement figé de la période**", embed=embed)
+        try:
+            msg = await channel.fetch_message(self.message_id)
+        except discord.NotFound:
+            self.message_id = None
+            await self.ensure_message()
+            return
 
-            meta["last_frozen"] = period_key
-            save_json(META_FILE, meta)
+        embed = self.build_embed()
+        await msg.edit(embed=embed)
 
-    @check_reset.before_loop
-    async def before_check(self):
-        await self.bot.wait_until_ready()
-
-    @app_commands.command(name="ladder", description="Afficher le ladder actuel")
-    async def ladder(self, interaction: discord.Interaction):
-        data = load_json(DATA_FILE)
-        period_key, period_label, _, _ = current_period()
-        scores = data.get(period_key, {})
-        embed = self.build_embed(period_key, period_label, scores)
-        await interaction.response.send_message(embed=embed)
+    # -------------------------
+    # Events
+    # -------------------------
+    @commands.Cog.listener()
+    async def on_ready(self):
+        await self.ensure_message()
+        await self.update_leaderboard()
 
 
 async def setup(bot: commands.Bot):
