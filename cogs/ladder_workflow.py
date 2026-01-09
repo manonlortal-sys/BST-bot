@@ -41,7 +41,7 @@ class TypeView(discord.ui.View):
     async def attack(self, interaction: discord.Interaction, _):
         await interaction.response.send_message(
             "Sélectionne les joueurs",
-            view=PlayerSelectView(self.bot, self.screen_msg, "attack"),
+            view=PlayerSelectView(self.bot, "Attaque"),
             ephemeral=True,
         )
 
@@ -49,49 +49,54 @@ class TypeView(discord.ui.View):
     async def defense(self, interaction: discord.Interaction, _):
         await interaction.response.send_message(
             "Sélectionne les joueurs",
-            view=PlayerSelectView(self.bot, self.screen_msg, "defense"),
+            view=PlayerSelectView(self.bot, "Défense"),
             ephemeral=True,
         )
 
 
 class PlayerSelectView(discord.ui.View):
-    def __init__(self, bot, screen_msg, mode):
+    def __init__(self, bot, combat_type):
         super().__init__(timeout=300)
-        self.add_item(PlayerSelect(bot, screen_msg, mode))
+        self.add_item(PlayerSelect(bot, combat_type))
 
 
 class PlayerSelect(discord.ui.UserSelect):
-    def __init__(self, bot, screen_msg, mode):
+    def __init__(self, bot, combat_type):
         super().__init__(min_values=1, max_values=4)
         self.bot = bot
-        self.screen_msg = screen_msg
-        self.mode = mode
+        self.combat_type = combat_type
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.send_message(
             "Choisis la configuration",
-            view=ConfigView(self.bot, self.mode, self.values),
+            view=ConfigView(
+                self.bot,
+                self.combat_type,
+                self.values,
+                interaction.user.display_name,
+            ),
             ephemeral=True,
         )
 
 
 class ConfigView(discord.ui.View):
-    def __init__(self, bot, mode, players):
+    def __init__(self, bot, combat_type, players, validator_name):
         super().__init__(timeout=300)
         self.bot = bot
-        self.mode = mode
+        self.combat_type = combat_type
         self.players = players
+        self.validator_name = validator_name
 
-        if mode == "attack":
+        if combat_type == "Attaque":
             self.add_item(ConfigButton("4v4 – 0 mort", 6))
             self.add_item(ConfigButton("4v4 – morts", 5))
-            self.add_item(ConfigButton("<4v4 victoire", 7))
+            self.add_item(ConfigButton("3v4 victoire", 7))
         else:
             self.add_item(ConfigButton("4v4 – 0 mort", 4))
             self.add_item(ConfigButton("4v4 – morts", 3))
-            self.add_item(ConfigButton("<4v4 victoire", 5))
+            self.add_item(ConfigButton("3v4 victoire", 5))
 
-    async def apply(self, interaction: discord.Interaction, points: int):
+    async def apply(self, interaction: discord.Interaction, label: str, points: int):
         data = load_data()
         period = current_period()
 
@@ -104,8 +109,17 @@ class ConfigView(discord.ui.View):
 
         save_data(data)
 
-        recap = "\n".join(f"{u.mention} +{points} pts" for u in self.players)
-        await interaction.channel.send(f"🧾 **Récap Ladder**\n{recap}")
+        recap_lines = [f"{u.mention} +{points} pts" for u in self.players]
+
+        recap_message = (
+            "🧾 **Récap Ladder**\n"
+            f"Type : {self.combat_type}\n"
+            f"Configuration : {label}\n"
+            f"Validé par : {self.validator_name}\n\n"
+            + "\n".join(recap_lines)
+        )
+
+        await interaction.channel.send(recap_message)
 
         leaderboard = self.bot.get_cog("LadderLeaderboard")
         if leaderboard:
@@ -120,7 +134,7 @@ class ConfigButton(discord.ui.Button):
         self.points = points
 
     async def callback(self, interaction: discord.Interaction):
-        await self.view.apply(interaction, self.points)
+        await self.view.apply(interaction, self.label, self.points)
 
 
 class LadderWorkflow(commands.Cog):
@@ -128,7 +142,6 @@ class LadderWorkflow(commands.Cog):
         self.bot = bot
 
     async def start(self, interaction: discord.Interaction, screen_msg):
-        # ⚠️ interaction déjà defer → FOLLOWUP OBLIGATOIRE
         await interaction.followup.send(
             "Type de combat ?",
             view=TypeView(self.bot, screen_msg),
