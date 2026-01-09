@@ -1,126 +1,90 @@
 import discord
 from discord.ext import commands
 
-# =============================
-# CONFIG
-# =============================
-SCREEN_CHANNELS = {
-    1326667338636066931,
-    1459153753587449948,
-}
-
 LADDER_ROLE_ID = 1459190410835660831
 
-# Verrou global anti-doublon
-SEEN_MESSAGES = set()
 
-# screen_message_id -> state
-SCREEN_STATES = {}  # pending | validated | refused
-
-
-class ValidationView(discord.ui.View):
-    def __init__(self, screen_message_id: int):
+class ScreenValidationView(discord.ui.View):
+    def __init__(self, bot, screen_message: discord.Message):
         super().__init__(timeout=None)
-        self.screen_message_id = screen_message_id
+        self.bot = bot
+        self.screen_message = screen_message
+        self.locked = False
 
-    def has_permission(self, interaction: discord.Interaction) -> bool:
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return any(r.id == LADDER_ROLE_ID for r in interaction.user.roles)
 
     @discord.ui.button(label="Valider", style=discord.ButtonStyle.success)
     async def validate(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.has_permission(interaction):
+        if self.locked:
             await interaction.response.send_message(
-                "Tu n’as pas le rôle Ladder.",
-                ephemeral=True,
+                "⛔ Validation déjà en cours.", ephemeral=True
             )
             return
 
-        if SCREEN_STATES.get(self.screen_message_id) != "pending":
-            await interaction.response.send_message(
-                "Ce screen est déjà traité.",
-                ephemeral=True,
-            )
-            return
-
-        SCREEN_STATES[self.screen_message_id] = "validated"
+        self.locked = True
+        self.disable_all_items()
+        await interaction.message.edit(view=self)
 
         await interaction.response.send_message(
-            "Screen validé. (Étape suivante à venir)",
+            "✅ Screen validé. Lancement de la validation…",
             ephemeral=True,
         )
 
+        workflow = self.bot.get_cog("LadderWorkflow")
+        if not workflow:
+            await interaction.followup.send(
+                "❌ Workflow ladder introuvable.", ephemeral=True
+            )
+            return
+
+        # 👉 APPEL MANQUANT AVANT (BUG)
+        await workflow.start(interaction, self.screen_message)
+
     @discord.ui.button(label="Refuser", style=discord.ButtonStyle.danger)
     async def refuse(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.has_permission(interaction):
-            await interaction.response.send_message(
-                "Tu n’as pas le rôle Ladder.",
-                ephemeral=True,
-            )
-            return
-
-        if SCREEN_STATES.get(self.screen_message_id) != "pending":
-            await interaction.response.send_message(
-                "Ce screen est déjà traité.",
-                ephemeral=True,
-            )
-            return
-
-        SCREEN_STATES[self.screen_message_id] = "refused"
+        self.disable_all_items()
+        await interaction.message.edit(view=self)
 
         await interaction.response.send_message(
-            "Screen refusé.",
+            "❌ Screen refusé.",
             ephemeral=True,
         )
 
 
 class LadderScreens(commands.Cog):
-    def __init__(self, bot: commands.Bot):
+    def __init__(self, bot):
         self.bot = bot
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # 🔒 ignorer messages du bot
         if message.author.bot:
             return
 
-        # 🔒 verrou immédiat anti-doublon (CRITIQUE)
-        if message.id in SEEN_MESSAGES:
-            return
-        SEEN_MESSAGES.add(message.id)
-
-        # 🔒 ignorer hors canaux ladder
-        if message.channel.id not in SCREEN_CHANNELS:
+        if not message.attachments:
             return
 
-        # 🔒 déjà traité
-        if message.id in SCREEN_STATES:
+        if not any(
+            att.content_type and att.content_type.startswith("image")
+            for att in message.attachments
+        ):
             return
 
-        # 🔍 détection image
-        has_image = False
+        channel_ids = {
+            1326667338636066931,
+            1459153753587449948,
+        }
 
-        for attachment in message.attachments:
-            if attachment.content_type and attachment.content_type.startswith("image/"):
-                has_image = True
-                break
-
-        if not has_image:
-            for embed in message.embeds:
-                if embed.type == "image":
-                    has_image = True
-                    break
-
-        if not has_image:
+        if message.channel.id not in channel_ids:
             return
 
-        # ✅ screen détecté
-        SCREEN_STATES[message.id] = "pending"
+        role_mention = f"<@&{LADDER_ROLE_ID}>"
 
         await message.channel.send(
-            f"<@&{LADDER_ROLE_ID}> merci de valider ce screen",
-            view=ValidationView(message.id),
+            f"{role_mention} merci de valider ce screen",
+            view=ScreenValidationView(self.bot, message),
         )
 
 
-async def setup(bot: commands.Bot):
+async def setup(bot):
     await bot.add_cog(LadderScreens(bot))
