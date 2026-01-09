@@ -10,8 +10,8 @@ from zoneinfo import ZoneInfo
 # CONFIG
 # =============================
 CHANNEL_LADDER_ID = 1459185721461051422
-DATA_FILE = "data/ladder.json"
-META_FILE = "data/ladder_meta.json"
+DATA_FILE = "/var/data/ladder.json"
+META_FILE = "/var/data/ladder_meta.json"
 TZ = ZoneInfo("Europe/Paris")
 
 MOIS_FR = [
@@ -22,7 +22,7 @@ MOIS_FR = [
 # =============================
 # UTILS
 # =============================
-def current_period():
+def compute_current_period():
     now = datetime.now(TZ)
     if now.day < 15:
         return f"{now.year}-{now.month:02d}-01_14"
@@ -68,8 +68,8 @@ def save_json(path, data):
 class LadderLeaderboard(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.message_id: int | None = None
-        self.last_period: str | None = None
+        self.message_id = None
+        self.active_period = None
         self._load_meta()
 
     # -------------------------
@@ -78,22 +78,26 @@ class LadderLeaderboard(commands.Cog):
     def _load_meta(self):
         meta = load_json(META_FILE)
         self.message_id = meta.get("message_id")
-        self.last_period = meta.get("last_period")
+        self.active_period = meta.get("active_period")
+
+        if not self.active_period:
+            self.active_period = compute_current_period()
+            self._save_meta()
 
     def _save_meta(self):
         save_json(META_FILE, {
             "message_id": self.message_id,
-            "last_period": self.last_period,
+            "active_period": self.active_period,
         })
 
     # -------------------------
     # EMBED
     # -------------------------
-    def build_embed(self, period: str, limit: int | None = 20, title_override: str | None = None):
+    def build_embed(self, limit=20, title_override=None):
         data = load_json(DATA_FILE)
-        scores = data.get(period, {})
+        scores = data.get(self.active_period, {})
 
-        start, end = period_dates(period)
+        start, end = period_dates(self.active_period)
         title = title_override or "🏆 LADDER GÉNÉRAL PVP 🏆"
 
         embed = discord.Embed(title=title, color=discord.Color.gold())
@@ -107,27 +111,34 @@ class LadderLeaderboard(commands.Cog):
         if limit:
             sorted_scores = sorted_scores[:limit]
 
-        embed.description = "\n".join(
-            f"{i}. {(self.bot.get_user(int(uid)) or uid).display_name} — {pts} pts"
-            for i, (uid, pts) in enumerate(sorted_scores, start=1)
-        )
+        lines = []
+        for i, (uid, pts) in enumerate(sorted_scores, start=1):
+            user = self.bot.get_user(int(uid))
+            name = user.display_name if user else f"Utilisateur {uid}"
+            lines.append(f"{i}. {name} — {pts} pts")
+
+        embed.description = "\n".join(lines)
         return embed
 
     # -------------------------
-    # FIGEAGE (APPEL EXPLICITE)
+    # PERIOD CHECK
     # -------------------------
     async def check_period_change(self):
-        current = current_period()
-        if self.last_period and self.last_period != current:
-            channel = self.bot.get_channel(CHANNEL_LADDER_ID)
-            if channel:
-                start, end = period_dates(self.last_period)
-                title = f"🏆 LADDER DU {start} AU {end} 🏆"
-                frozen = self.build_embed(self.last_period, limit=None, title_override=title)
-                await channel.send(embed=frozen)
+        current = compute_current_period()
+        if current == self.active_period:
+            return
 
-            self.last_period = current
-            self._save_meta()
+        channel = self.bot.get_channel(CHANNEL_LADDER_ID)
+        if channel:
+            start, end = period_dates(self.active_period)
+            frozen = self.build_embed(
+                limit=None,
+                title_override=f"🏆 LADDER DU {start} AU {end} 🏆"
+            )
+            await channel.send(embed=frozen)
+
+        self.active_period = current
+        self._save_meta()
 
     # -------------------------
     # MESSAGE PERSISTANT
@@ -144,17 +155,14 @@ class LadderLeaderboard(commands.Cog):
             except discord.NotFound:
                 self.message_id = None
 
-        msg = await channel.send(embed=self.build_embed(current_period()))
+        msg = await channel.send(embed=self.build_embed())
         self.message_id = msg.id
         self._save_meta()
 
     async def update_leaderboard(self):
         await self.ensure_message()
-        if not self.message_id:
-            return
-
         channel = self.bot.get_channel(CHANNEL_LADDER_ID)
-        if not channel:
+        if not channel or not self.message_id:
             return
 
         try:
@@ -164,7 +172,7 @@ class LadderLeaderboard(commands.Cog):
             await self.ensure_message()
             return
 
-        await msg.edit(embed=self.build_embed(current_period()))
+        await msg.edit(embed=self.build_embed())
 
     # -------------------------
     # /ladder
@@ -172,7 +180,7 @@ class LadderLeaderboard(commands.Cog):
     @app_commands.command(name="ladder", description="Afficher le ladder actuel")
     async def ladder(self, interaction: discord.Interaction):
         await self.check_period_change()
-        await interaction.response.send_message(embed=self.build_embed(current_period()))
+        await interaction.response.send_message(embed=self.build_embed())
 
     # -------------------------
     # EVENTS
