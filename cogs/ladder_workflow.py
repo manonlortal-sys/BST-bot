@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 # =============================
 # CONFIG
 # =============================
-DATA_FILE = "data/ladder.json"
+DATA_FILE = "/var/data/ladder.json"
 TZ = ZoneInfo("Europe/Paris")
 
 
