@@ -4,13 +4,15 @@ from discord import app_commands
 import json
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 LEADERBOARD_CHANNEL_ID = 1459185721461051422
 DATA_FILE = "data/ladder.json"
+TZ = ZoneInfo("Europe/Paris")
 
 
 def current_period():
-    now = datetime.utcnow()
+    now = datetime.now(TZ)
     if now.day < 15:
         return f"{now.year}-{now.month:02d}-01_14"
     return f"{now.year}-{now.month:02d}-15_end"
@@ -22,9 +24,9 @@ class LadderLeaderboard(commands.Cog):
         self.message_id: int | None = None
 
     def build_embed(self) -> discord.Embed:
-        if not os.path.exists(DATA_FILE):
-            scores = {}
-        else:
+        scores = {}
+
+        if os.path.exists(DATA_FILE):
             with open(DATA_FILE, "r") as f:
                 data = json.load(f)
             scores = data.get(current_period(), {})
@@ -34,7 +36,7 @@ class LadderLeaderboard(commands.Cog):
         desc = "\n".join(
             f"{i+1}. <@{uid}> — {pts} pts"
             for i, (uid, pts) in enumerate(sorted_scores)
-        ) or "Aucun point"
+        ) or "Aucun point pour cette période."
 
         return discord.Embed(
             title="LADDER GÉNÉRAL PVP",
@@ -61,10 +63,10 @@ class LadderLeaderboard(commands.Cog):
         self.message_id = msg.id
 
     # =============================
-    # /classement
+    # /ladder
     # =============================
-    @app_commands.command(name="classement", description="Afficher le ladder actuel dans ce salon")
-    async def classement(self, interaction: discord.Interaction):
+    @app_commands.command(name="ladder", description="Afficher le ladder actuel")
+    async def ladder(self, interaction: discord.Interaction):
         embed = self.build_embed()
         await interaction.response.send_message(embed=embed)
 
