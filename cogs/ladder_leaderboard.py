@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 import json
 import os
@@ -10,6 +10,9 @@ from zoneinfo import ZoneInfo
 # CONFIG
 # =============================
 CHANNEL_LADDER_ID = 1459185721461051422
+LADDER_ROLE_ID = 1459190410835660831
+LEAD_ROLE_ID = 1280235149191020625
+
 DATA_FILE = "/var/data/ladder.json"
 META_FILE = "/var/data/ladder_meta.json"
 TZ = ZoneInfo("Europe/Paris")
@@ -22,45 +25,37 @@ MOIS_FR = [
 # =============================
 # UTILS
 # =============================
-def compute_current_period():
-    now = datetime.now(TZ)
-    if now.day < 15:
-        return f"{now.year}-{now.month:02d}-01_14"
-    return f"{now.year}-{now.month:02d}-15_end"
-
-
-def period_dates(period: str):
-    year, month, span = period.split("-")
-    year = int(year)
-    month = int(month)
-    mois = MOIS_FR[month - 1]
-
-    if span == "01_14":
-        start = f"1er {mois} {year}"
-        end = f"14 {mois} {year}"
-    else:
-        start = f"15 {mois} {year}"
-        if month == 12:
-            next_month = datetime(year + 1, 1, 1, tzinfo=TZ)
-        else:
-            next_month = datetime(year, month + 1, 1, tzinfo=TZ)
-        last_day = (next_month - timedelta(days=1)).day
-        end = f"{last_day} {mois} {year}"
-
-    return start, end
-
-
 def load_json(path):
     if not os.path.exists(path):
         return {}
     with open(path, "r") as f:
         return json.load(f)
 
-
 def save_json(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+
+def compute_period(now: datetime):
+    if now.day < 15:
+        return f"{now.year}-{now.month:02d}-01_14"
+    return f"{now.year}-{now.month:02d}-15_end"
+
+def period_dates(period: str):
+    year, month, span = period.split("-")
+    year, month = int(year), int(month)
+    mois = MOIS_FR[month - 1]
+
+    if span == "01_14":
+        return f"1er {mois} {year}", f"14 {mois} {year}"
+
+    if month == 12:
+        next_month = datetime(year + 1, 1, 1, tzinfo=TZ)
+    else:
+        next_month = datetime(year, month + 1, 1, tzinfo=TZ)
+
+    last_day = (next_month - timedelta(days=1)).day
+    return f"15 {mois} {year}", f"{last_day} {mois} {year}"
 
 # =============================
 # COG
@@ -71,6 +66,7 @@ class LadderLeaderboard(commands.Cog):
         self.message_id = None
         self.active_period = None
         self._load_meta()
+        self.period_task.start()
 
     # -------------------------
     # META
@@ -81,7 +77,7 @@ class LadderLeaderboard(commands.Cog):
         self.active_period = meta.get("active_period")
 
         if not self.active_period:
-            self.active_period = compute_current_period()
+            self.active_period = compute_period(datetime.now(TZ))
             self._save_meta()
 
     def _save_meta(self):
@@ -91,13 +87,13 @@ class LadderLeaderboard(commands.Cog):
         })
 
     # -------------------------
-    # EMBED
+    # EMBEDS
     # -------------------------
-    def build_embed(self, limit=20, title_override=None):
+    def build_embed(self, period: str, title_override=None):
         data = load_json(DATA_FILE)
-        scores = data.get(self.active_period, {})
+        scores = data.get(period, {})
 
-        start, end = period_dates(self.active_period)
+        start, end = period_dates(period)
         title = title_override or "🏆 LADDER GÉNÉRAL PVP 🏆"
 
         embed = discord.Embed(title=title, color=discord.Color.gold())
@@ -108,8 +104,6 @@ class LadderLeaderboard(commands.Cog):
             return embed
 
         sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-        if limit:
-            sorted_scores = sorted_scores[:limit]
 
         lines = []
         for i, (uid, pts) in enumerate(sorted_scores, start=1):
@@ -121,24 +115,74 @@ class LadderLeaderboard(commands.Cog):
         return embed
 
     # -------------------------
-    # PERIOD CHECK
+    # RECOMPENSES
     # -------------------------
-    async def check_period_change(self):
-        current = compute_current_period()
+    def build_rewards_message(self, period: str):
+        data = load_json(DATA_FILE)
+        scores = data.get(period, {})
+        sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+
+        start, end = period_dates(period)
+        lines = [
+            f"🏆 **RÉCOMPENSES LADDER PVP**",
+            f"**Période : du {start} au {end}**\n"
+        ]
+
+        for i, (uid, _) in enumerate(sorted_scores[:24], start=1):
+            mention = f"<@{uid}>"
+            if i <= 3:
+                reward = "3 percepteurs"
+            elif i <= 10:
+                reward = "2 percepteurs"
+            else:
+                reward = "1 percepteur"
+
+            lines.append(f"**{i}e** — {mention} → {reward}")
+
+        lines.append("")
+        lines.append(f"<@&{LEAD_ROLE_ID}>")
+        lines.append(
+            "Merci d’attribuer un percepteur :\n"
+            "- au meilleur PvM de la période\n"
+            "- au contrôleur perco\n"
+            "- au compteur ladder\n"
+        )
+        lines.append(
+            "⚠️ **Merci de lever vos percepteurs dans les 24h pour faire de la place aux joueurs de la période. "
+            "À défaut, vos percepteurs seront levés et les ressources intégrées au coffre guilde.**"
+        )
+
+        return "\n".join(lines)
+
+    # -------------------------
+    # PERIOD TASK
+    # -------------------------
+    @tasks.loop(minutes=1)
+    async def period_task(self):
+        now = datetime.now(TZ)
+        current = compute_period(now)
+
         if current == self.active_period:
             return
 
         channel = self.bot.get_channel(CHANNEL_LADDER_ID)
-        if channel:
-            start, end = period_dates(self.active_period)
-            frozen = self.build_embed(
-                limit=None,
-                title_override=f"🏆 LADDER DU {start} AU {end} 🏆"
-            )
-            await channel.send(embed=frozen)
+        if not channel:
+            return
 
+        # 1️⃣ Ladder figé
+        frozen_embed = self.build_embed(
+            self.active_period,
+            title_override=f"🏆 LADDER DU {period_dates(self.active_period)[0]} AU {period_dates(self.active_period)[1]} 🏆"
+        )
+        await channel.send(embed=frozen_embed)
+
+        # 2️⃣ Récompenses
+        await channel.send(self.build_rewards_message(self.active_period))
+
+        # 3️⃣ Reset
         self.active_period = current
         self._save_meta()
+        await self.update_leaderboard()
 
     # -------------------------
     # MESSAGE PERSISTANT
@@ -155,7 +199,7 @@ class LadderLeaderboard(commands.Cog):
             except discord.NotFound:
                 self.message_id = None
 
-        msg = await channel.send(embed=self.build_embed())
+        msg = await channel.send(embed=self.build_embed(self.active_period))
         self.message_id = msg.id
         self._save_meta()
 
@@ -165,26 +209,26 @@ class LadderLeaderboard(commands.Cog):
         if not channel or not self.message_id:
             return
 
-        try:
-            msg = await channel.fetch_message(self.message_id)
-        except discord.NotFound:
-            self.message_id = None
-            await self.ensure_message()
-            return
-
-        await msg.edit(embed=self.build_embed())
+        msg = await channel.fetch_message(self.message_id)
+        await msg.edit(embed=self.build_embed(self.active_period))
 
     # -------------------------
-    # /ladder
+    # COMMANDES
     # -------------------------
     @app_commands.command(name="ladder", description="Afficher le ladder actuel")
     async def ladder(self, interaction: discord.Interaction):
-        await self.check_period_change()
-        await interaction.response.send_message(embed=self.build_embed())
+        await interaction.response.send_message(embed=self.build_embed(self.active_period))
 
-    # -------------------------
-    # EVENTS
-    # -------------------------
+    @app_commands.command(name="recompenses", description="Envoyer les récompenses du ladder")
+    async def recompenses(self, interaction: discord.Interaction):
+        if not any(r.id in (LADDER_ROLE_ID, LEAD_ROLE_ID) for r in interaction.user.roles):
+            await interaction.response.send_message("Accès refusé.", ephemeral=True)
+            return
+
+        await interaction.response.send_message(
+            self.build_rewards_message(self.active_period)
+        )
+
     @commands.Cog.listener()
     async def on_ready(self):
         await self.ensure_message()
