@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 # =============================
 # CONFIG
 # =============================
-LADDER_ROLE_ID = 954689441459503114
+LADDER_ROLE_ID = 1459190410835660831
 DATA_FILE = "/var/data/ladder.json"
 META_FILE = "/var/data/ladder_meta.json"
 TZ = ZoneInfo("Europe/Paris")
