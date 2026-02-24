@@ -2,9 +2,29 @@ import random
 import discord
 from discord.ext import commands
 import os
+from flask import Flask
+from threading import Thread
+
+# ====== FLASK POUR RENDER ======
+
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Bot is running"
+
+def run():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+
+# ====== DISCORD BOT ======
 
 intents = discord.Intents.default()
-intents.message_content = True  # IMPORTANT pour lire les messages
+intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -31,4 +51,8 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
+# LANCE FLASK
+keep_alive()
+
+# LANCE DISCORD
 bot.run(os.getenv("TOKEN"))
