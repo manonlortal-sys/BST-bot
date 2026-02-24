@@ -1,67 +1,34 @@
-import os
-import threading
+import random
 import discord
 from discord.ext import commands
-from flask import Flask
+import os
 
-# ---------- Flask (Render) ----------
-app = Flask(__name__)
+intents = discord.Intents.default()
+intents.message_content = True  # IMPORTANT pour lire les messages
 
-@app.route("/")
-def index():
-    return "Bot Cafard is running", 200
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+TARGET_ID = 278874848061554688
 
-
-# ---------- Discord ----------
-INTENTS = discord.Intents.default()
-INTENTS.message_content = True
-INTENTS.members = True
-INTENTS.reactions = True
-
-
-class CafardBot(commands.Bot):
-    def __init__(self):
-        super().__init__(
-            command_prefix="!",
-            intents=INTENTS,
-        )
-
-    async def setup_hook(self):
-        # 🔹 Charge tous les cogs nécessaires
-        for ext in [
-            "cogs.cafard",
-            "cogs.ladder_screens",
-            "cogs.ladder_workflow",
-            "cogs.ladder_leaderboard",
-            "cogs.ladder_joueur",
-            # plus tard :
-            # "cogs.ladder_validation",
-            # "cogs.ladder_leaderboard",
-        ]:
-            try:
-                await self.load_extension(ext)
-                print(f"✅ Cog chargé : {ext}")
-            except Exception as e:
-                print(f"❌ Erreur chargement {ext} → {e}")
-
-        # Sync global des slash commands
-        await self.tree.sync()
-        print("🔄 Slash commands synchronisées")
-
-
-bot = CafardBot()
-
+reponses = [
+    "silence flûte",
+    "on t'a pas sonné",
+    "qui a demandé l'heure à patrikus?",
+    "merci d'ignorer ce qu'il raconte",
+    "bonjour, non",
+    "coupez lui internet",
+    "la paix non",
+    "Y VA LA FERMER SA GUEULE"
+]
 
 @bot.event
-async def on_ready():
-    print(f"✅ Connecté en tant que {bot.user} (ID: {bot.user.id})")
+async def on_message(message):
+    if message.author.bot:
+        return
 
+    if message.author.id == TARGET_ID:
+        await message.channel.send(random.choice(reponses))
 
-# ---------- Lancement ----------
-if __name__ == "__main__":
-    threading.Thread(target=run_flask, daemon=True).start()
-    bot.run(os.getenv("DISCORD_TOKEN"))
+    await bot.process_commands(message)
+
+bot.run(os.getenv("TOKEN"))
