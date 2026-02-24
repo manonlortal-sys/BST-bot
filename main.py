@@ -55,4 +55,4 @@ async def on_message(message):
 keep_alive()
 
 # LANCE DISCORD
-bot.run(os.getenv("TOKEN"))
+bot.run(os.getenv("DISCORD_TOKEN"))
