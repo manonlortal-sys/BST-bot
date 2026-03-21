@@ -5,7 +5,7 @@ def is_orga_or_admin(interaction):
 
     # Rôle Lead
     for role in interaction.user.roles:
-        if role.name.lower() == "lead":
+        if role.name.lower() == "Lead":
             return True
 
     return False
