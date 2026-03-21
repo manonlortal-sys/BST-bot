@@ -128,4 +128,4 @@ async def on_ready():
 # =========================
 # RUN
 # =========================
-bot.run("TOKEN")
+bot.run("DISCORD_TOKEN")
