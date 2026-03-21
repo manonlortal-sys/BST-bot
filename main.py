@@ -128,4 +128,6 @@ async def on_ready():
 # =========================
 # RUN
 # =========================
-bot.run("DISCORD_TOKEN")
+import os
+
+bot.run(os.environ["DISCORD_TOKEN"])
