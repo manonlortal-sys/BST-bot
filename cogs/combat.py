@@ -1,157 +1,182 @@
+# cogs/combat.py
+
 import discord
 from discord.ext import commands
 from discord import app_commands
 
-# Config des rôles
-ROLE_LADDER_ID = 1459190410835660831
-ROLE_LEAD_ID = 1280235149191020625
+MAX_JOUEURS = 4
 
-# Points bonus
-POINTS_INFERIORITE = 3
-POINTS_SUPERIORITE = -2
+# Points bonus pour les nouveaux boutons
+BONUS_POINTS = {"aucun_mort": 10, "attaque": 5, "defense": 5, "inferiorite": 3, "superiorite": -2}
 
 class CombatCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.current_combat = None  # Contient les infos du combat en cours
+        self.combats_en_cours = {}  # key: joueur.id, value: dict avec infos du combat
 
-    async def update_embed(self):
-        """Met à jour l'embed principal du combat"""
-        if not self.current_combat:
+    async def cog_load(self):
+        print("✅ Cog Combat chargé et prêt")
+
+    @app_commands.command(name="add_screen", description="Ajouter un combat")
+    async def add_screen(self, interaction: discord.Interaction):
+        joueur_id = interaction.user.id
+
+        if joueur_id in self.combats_en_cours:
+            await interaction.response.send_message(
+                "❌ Tu as déjà un combat en cours. Termine-le avant d'en lancer un autre.",
+                ephemeral=True
+            )
             return
+
+        view = CombatView(self, joueur_id)
         embed = discord.Embed(
             title="📊 Ajout d’un combat au ladder purgatoire",
             description="Validation en attente ⏳",
-            color=discord.Color.blue()
+            color=0x5865F2
         )
-
-        # Type de combat
+        embed.add_field(name="👥 Joueurs présents", value=interaction.user.mention)
         embed.add_field(
-            name="Type de combat",
-            value=f"{self.current_combat.get('type', 'Non défini')} (+{self.current_combat.get('points_type', 0)} pts)",
-            inline=False
+            name="💠 Points du combat",
+            value="🗡️ Attaque : +0 pts\n🛡️ Défense : +0 pts\n❎ Aucun mort : +0 pts\n⬆️ Supériorité : +0 pts\n⬇️ Infériorité : +0 pts"
         )
+        embed.add_field(name="💰 Points par joueur", value="0 pts")
 
-        # Aucun mort
-        embed.add_field(
-            name="Aucun mort",
-            value=f"{self.current_combat.get('aucun_mort', 'Non')} (+{self.current_combat.get('points_aucun_mort', 0)} pts)",
-            inline=False
-        )
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
+        message = await interaction.original_response()
 
-        # Supériorité / Infériorité
-        embed.add_field(
-            name="Supériorité / Infériorité",
-            value=f"Infériorité : +{self.current_combat.get('points_inferiorite',0)} pts\n"
-                  f"Supériorité : {self.current_combat.get('points_superiorite',0)} pts",
-            inline=False
-        )
-
-        # Joueurs et points
-        if self.current_combat.get("joueurs"):
-            joueurs_txt = ""
-            for j in self.current_combat["joueurs"]:
-                total = self.current_combat["joueurs"][j]["total"]
-                joueurs_txt += f"{j} : {total} pts\n"
-            embed.add_field(name="Joueurs", value=joueurs_txt, inline=False)
-        await self.current_combat["message"].edit(embed=embed)
-
-    # ------------------ Commande /add ------------------
-    @app_commands.command(name="add", description="Ajouter un combat")
-    async def add_combat(self, interaction: discord.Interaction):
-        self.current_combat = {
+        self.combats_en_cours[joueur_id] = {
+            "status": "en_cours",
+            "joueurs_present": [interaction.user],
             "type": None,
-            "points_type": 0,
-            "aucun_mort": None,
-            "points_aucun_mort": 0,
-            "points_inferiorite": 0,
-            "points_superiorite": 0,
-            "joueurs": {},
+            "aucun_mort": False,
+            "inferiorite": False,
+            "superiorite": False,
+            "points": 0,
+            "bonus": {k: 0 for k in BONUS_POINTS.keys()},
+            "message": message,
+            "view": view,
         }
 
+    @app_commands.command(name="reset_combat", description="Réinitialiser ton combat en cours")
+    async def reset_combat(self, interaction: discord.Interaction):
+        joueur_id = interaction.user.id
+        if joueur_id in self.combats_en_cours:
+            del self.combats_en_cours[joueur_id]
+            await interaction.response.send_message("✅ Ton combat en cours a été réinitialisé.", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Tu n'as pas de combat en cours.", ephemeral=True)
+
+
+# ---------------------------
+# Vue principale avec boutons
+# ---------------------------
+class CombatView(discord.ui.View):
+    def __init__(self, cog, joueur_id):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.joueur_id = joueur_id
+
+    @discord.ui.button(label="🗡️ Attaque", style=discord.ButtonStyle.red)
+    async def attaque(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.set_type(interaction, "attaque")
+
+    @discord.ui.button(label="🛡️ Défense", style=discord.ButtonStyle.green)
+    async def defense(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.set_type(interaction, "defense")
+
+    @discord.ui.button(label="❎ Aucun mort", style=discord.ButtonStyle.gray)
+    async def aucun_mort(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.toggle_bonus(interaction, "aucun_mort")
+
+    @discord.ui.button(label="⬇️ Infériorité", style=discord.ButtonStyle.blurple)
+    async def inferiorite(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.toggle_bonus(interaction, "inferiorite")
+
+    @discord.ui.button(label="⬆️ Supériorité", style=discord.ButtonStyle.blurple)
+    async def superiorite(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.toggle_bonus(interaction, "superiorite")
+
+    @discord.ui.button(label="➕ Ajouter joueurs", style=discord.ButtonStyle.secondary)
+    async def ajouter_joueurs(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = AjouterJoueursView(self.cog, self.joueur_id)
+        await interaction.response.send_message(
+            "Sélectionne les joueurs à ajouter ⬇️",
+            view=view,
+            ephemeral=True
+        )
+
+    async def toggle_bonus(self, interaction: discord.Interaction, bonus_type: str):
+        combat = self.cog.combats_en_cours[self.joueur_id]
+        combat[bonus_type] = not combat[bonus_type]
+        combat["bonus"][bonus_type] = BONUS_POINTS[bonus_type] if combat[bonus_type] else 0
+        # Recalcul des points par joueur
+        combat["points"] = sum(combat["bonus"].values())
+        await self.update_embed(combat)
+        await interaction.response.defer()
+
+    async def set_type(self, interaction: discord.Interaction, combat_type: str):
+        combat = self.cog.combats_en_cours[self.joueur_id]
+        combat["type"] = combat_type
+        combat["bonus"][combat_type] = BONUS_POINTS[combat_type]
+        combat["points"] = sum(combat["bonus"].values())
+        await self.update_embed(combat)
+        await interaction.response.defer()
+
+    async def update_embed(self, combat):
+        points_lines = [
+            f"🗡️ Attaque : +{combat['bonus']['attaque']} pts",
+            f"🛡️ Défense : +{combat['bonus']['defense']} pts",
+            f"❎ Aucun mort : +{combat['bonus']['aucun_mort']} pts",
+            f"⬇️ Infériorité : +{combat['bonus']['inferiorite']} pts",
+            f"⬆️ Supériorité : +{combat['bonus']['superiorite']} pts"
+        ]
         embed = discord.Embed(
             title="📊 Ajout d’un combat au ladder purgatoire",
             description="Validation en attente ⏳",
-            color=discord.Color.blue()
+            color=0x5865F2
         )
+        embed.add_field(
+            name="👥 Joueurs présents",
+            value=", ".join([m.mention for m in combat["joueurs_present"]])
+        )
+        embed.add_field(name="💠 Points du combat", value="\n".join(points_lines))
+        embed.add_field(name="💰 Points par joueur", value=f"{combat['points']} pts")
+        await combat["message"].edit(embed=embed, view=combat["view"])
 
-        # Boutons
-        view = discord.ui.View()
-        view.add_item(CombatTypeButton("🗡️ Attaque", "attaque"))
-        view.add_item(CombatTypeButton("🛡️ Défense", "defense"))
-        view.add_item(JoueursButton())
-        view.add_item(BonusButton("🟢 Infériorité", "inferiorite"))
-        view.add_item(BonusButton("🔴 Supériorité", "superiorite"))
 
-        message = await interaction.response.send_message(embed=embed, view=view)
-        self.current_combat["message"] = await interaction.original_response()
+# ---------------------------
+# Vue avec menu de sélection des joueurs
+# ---------------------------
+class AjouterJoueursView(discord.ui.View):
+    def __init__(self, cog, joueur_id):
+        super().__init__(timeout=900)
+        self.cog = cog
+        self.joueur_id = joueur_id
+        self.add_item(JoueurSelect(cog, joueur_id))
 
-# ------------------ Boutons ------------------
 
-class CombatTypeButton(discord.ui.Button):
-    def __init__(self, label, ctype):
-        super().__init__(style=discord.ButtonStyle.success, label=label)
-        self.ctype = ctype
-
-    async def callback(self, interaction: discord.Interaction):
-        cog: CombatCog = interaction.client.get_cog("CombatCog")
-        if not cog.current_combat:
-            await interaction.response.send_message("Pas de combat en cours", ephemeral=True)
-            return
-
-        # Appliquer le type de combat
-        cog.current_combat["type"] = self.label
-        cog.current_combat["points_type"] = 5 if self.ctype == "attaque" else 4
-
-        # Mettre à jour les points des joueurs
-        for j in cog.current_combat["joueurs"]:
-            cog.current_combat["joueurs"][j]["total"] = (
-                cog.current_combat["joueurs"][j]["total_base"] +
-                cog.current_combat["points_type"] +
-                cog.current_combat.get("points_aucun_mort",0) +
-                cog.current_combat.get("points_inferiorite",0) +
-                cog.current_combat.get("points_superiorite",0)
-            )
-        await cog.update_embed()
-        await interaction.response.send_message(f"Type {self.label} appliqué ✅", ephemeral=True)
-
-class BonusButton(discord.ui.Button):
-    def __init__(self, label, bonus_type):
-        super().__init__(style=discord.ButtonStyle.primary, label=label)
-        self.bonus_type = bonus_type
+class JoueurSelect(discord.ui.UserSelect):
+    def __init__(self, cog, joueur_id):
+        super().__init__(max_values=MAX_JOUEURS, placeholder="Recherche un membre...")
+        self.cog = cog
+        self.joueur_id = joueur_id
 
     async def callback(self, interaction: discord.Interaction):
-        cog: CombatCog = interaction.client.get_cog("CombatCog")
-        if not cog.current_combat:
-            await interaction.response.send_message("Pas de combat en cours", ephemeral=True)
-            return
+        combat = self.cog.combats_en_cours[self.joueur_id]
 
-        if self.bonus_type == "inferiorite":
-            cog.current_combat["points_inferiorite"] = POINTS_INFERIORITE
-        elif self.bonus_type == "superiorite":
-            cog.current_combat["points_superiorite"] = POINTS_SUPERIORITE
+        for member in self.values:
+            if member not in combat["joueurs_present"] and len(combat["joueurs_present"]) < MAX_JOUEURS:
+                combat["joueurs_present"].append(member)
 
-        # Mettre à jour les points joueurs
-        for j in cog.current_combat["joueurs"]:
-            cog.current_combat["joueurs"][j]["total"] = (
-                cog.current_combat["joueurs"][j]["total_base"] +
-                cog.current_combat["points_type"] +
-                cog.current_combat.get("points_aucun_mort",0) +
-                cog.current_combat.get("points_inferiorite",0) +
-                cog.current_combat.get("points_superiorite",0)
-            )
-        await cog.update_embed()
-        await interaction.response.send_message(f"{self.label} appliqué ✅", ephemeral=True)
+        # Recalcul des points
+        combat["points"] = sum(combat["bonus"].values())
 
-class JoueursButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(style=discord.ButtonStyle.secondary, label="➕ Ajouter joueurs")
+        await interaction.response.edit_message(content="✅ Joueurs ajoutés !", view=None)
+        await combat["view"].update_embed(combat)
 
-    async def callback(self, interaction: discord.Interaction):
-        # Ici tu dois implémenter le UserSelect pour choisir jusqu'à 4 joueurs
-        await interaction.response.send_message("Sélection de joueurs (placeholder) ✅", ephemeral=True)
 
-# ------------------ Setup ------------------
-
+# ---------------------------
+# Fonction pour charger le cog
+# ---------------------------
 async def setup(bot):
     await bot.add_cog(CombatCog(bot))
