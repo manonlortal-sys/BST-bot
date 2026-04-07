@@ -9,11 +9,8 @@ class CombatCog(commands.Cog):
         self.bot = bot
         self.combats_en_cours = {}  # key: joueur.id, value: dict avec infos du combat
 
-        # Ajouter la commande slash dans le bot tree
-        self.bot.tree.add_command(self.add_screen)
-
     async def cog_load(self):
-        print("✅ Cog Combat chargé")
+        print("✅ Cog Combat chargé et prêt")
 
     # ---------------------------
     # Commande /add_screen minimale
