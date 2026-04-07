@@ -31,6 +31,7 @@ class MyBot(commands.Bot):
         # Charger les cogs avant la connexion, **un par un**
         await self.load_extension("cogs.combat")
         await self.load_extension("cogs.leaderboard")
+        await self.load_extension("cogs.leaderboard_edit")
         # Synchronisation globale des commandes slash
         await self.tree.sync()
         print("✅ Cogs chargés et commandes slash synchronisées")
