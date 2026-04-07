@@ -1,12 +1,10 @@
-# cogs/combat.py
-
 import discord
 from discord.ext import commands
 from discord import app_commands
 import asyncio
 
 MAX_JOUEURS = 4
-MAX_SCREENS = 5  # Nombre maximum de screens par combat
+MAX_SCREENS = 5
 LADDER_ROLE_ID = 1459190410835660831  # rôle ladder
 
 class CombatCog(commands.Cog):
@@ -30,7 +28,7 @@ class CombatCog(commands.Cog):
 
         view = CombatView(self, joueur_id)
         embed = discord.Embed(
-            title="📊 Ajout d’un combat au ladder purgatoire",
+            title="📊 Ajout d’un combat au ladder",
             description="Validation en attente ⏳",
             color=0x5865F2
         )
@@ -150,16 +148,8 @@ class CombatView(discord.ui.View):
         await self.update_embed(combat)
         await interaction.response.defer()
 
-    @discord.ui.button(label="✅ Valider combat", style=discord.ButtonStyle.green)
-    async def valider_combat(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Vérifie que l'utilisateur a le rôle ladder
-        roles_ids = [role.id for role in interaction.user.roles]
-        if LADDER_ROLE_ID not in roles_ids:
-            await interaction.response.send_message(
-                "❌ Seuls les membres du rôle ladder peuvent valider le combat.", ephemeral=True
-            )
-            return
-
+    @discord.ui.button(label="✅ Valider par Ladder", style=discord.ButtonStyle.green)
+    async def valider_par_ladder(self, interaction: discord.Interaction, button: discord.ui.Button):
         combat = self.cog.combats_en_cours[self.joueur_id]
         role = interaction.guild.get_role(LADDER_ROLE_ID)
 
@@ -175,15 +165,15 @@ class CombatView(discord.ui.View):
             points_lines.append(f"⚖️ Supériorité / Infériorité : {val:+} pts")
 
         embed = discord.Embed(
-            title="📊 Combat terminé",
-            description="Résultat du combat :",
+            title="📊 Combat validé par le joueur",
+            description="Résultat du combat prêt pour le ladder ⏳",
             color=0x57F287
         )
         embed.add_field(
             name="👥 Joueurs présents",
             value=", ".join([m.mention for m in combat["joueurs_present"]])
         )
-        embed.add_field(name="💠 Points du combat", value="\n".join(points_lines) if points_lines else "—")
+        embed.add_field(name="💠 Points du combat", value="\n".join(points_lines))
         embed.add_field(name="💰 Points par joueur", value=f"{combat['points']} pts")
         if combat['screens']:
             embed.add_field(name="🖼️ Screens", value="\n".join(combat['screens']))
@@ -193,6 +183,10 @@ class CombatView(discord.ui.View):
             embed=embed,
             allowed_mentions=discord.AllowedMentions(roles=True)
         )
+
+        # Désactiver le bouton après validation
+        button.disabled = True
+        await combat["message"].edit(view=self)
 
         del self.cog.combats_en_cours[self.joueur_id]
 
@@ -217,7 +211,7 @@ class CombatView(discord.ui.View):
             points_lines.append(f"⚖️ Supériorité / Infériorité : {val:+} pts")
 
         embed = discord.Embed(
-            title="📊 Ajout d’un combat au ladder purgatoire",
+            title="📊 Ajout d’un combat au ladder",
             description="Validation en attente ⏳",
             color=0x5865F2
         )
