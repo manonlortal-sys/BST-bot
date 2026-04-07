@@ -2,22 +2,23 @@
 
 import discord
 from discord.ext import commands
+from discord import app_commands
 
 class CombatCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.combats_en_cours = {}  # key: joueur.id, value: dict avec infos du combat
 
-    @commands.Cog.listener()
-    async def on_ready(self):
-        print("Cog Combat chargé ✅")
+        # Ajouter la commande slash dans le bot tree
+        self.bot.tree.add_command(self.add_screen)
 
-    @commands.Cog.listener()
-    async def on_interaction(self, interaction: discord.Interaction):
-        # Nécessaire pour les interactions futures (buttons, menus)
-        pass
+    async def cog_load(self):
+        print("✅ Cog Combat chargé")
 
-    @commands.tree.command(name="add_screen", description="Ajouter un combat")
+    # ---------------------------
+    # Commande /add_screen minimale
+    # ---------------------------
+    @app_commands.command(name="add_screen", description="Ajouter un combat")
     async def add_screen(self, interaction: discord.Interaction):
         joueur_id = interaction.user.id
 
@@ -47,6 +48,8 @@ class CombatCog(commands.Cog):
 
         await interaction.response.send_message(embed=embed, ephemeral=False)
 
+# ---------------------------
 # Fonction pour charger le cog depuis main.py
+# ---------------------------
 async def setup(bot):
     await bot.add_cog(CombatCog(bot))
