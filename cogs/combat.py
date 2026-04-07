@@ -5,7 +5,7 @@ from discord.ext import commands
 from discord import app_commands
 
 MAX_JOUEURS = 4
-MAX_SCREENS = 5  # Limite de screens par combat
+MAX_SCREENS = 5  # Nombre maximum de screens par combat
 
 class CombatCog(commands.Cog):
     def __init__(self, bot):
@@ -35,10 +35,10 @@ class CombatCog(commands.Cog):
         embed.add_field(name="👥 Joueurs présents", value=interaction.user.mention)
         embed.add_field(
             name="💠 Points du combat",
-            value="🗡️ Attaque : +0 pts\n🛡️ Défense : +0 pts\n❎ Aucun mort : +0 pts\n⬇️ Infériorité : +0 pts\n⬆️ Supériorité : 0 pts"
+            value="🗡️ Attaque : +0 pts\n🛡️ Défense : +0 pts\n❎ Aucun mort : +0 pts"
         )
         embed.add_field(name="💰 Points par joueur", value="0 pts")
-        embed.add_field(name="🖼️ Screens", value="0 screen(s) ajoutés")
+        embed.add_field(name="🖼️ Screens ajoutés", value="0 / 5")
 
         await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
         message = await interaction.original_response()
@@ -48,13 +48,11 @@ class CombatCog(commands.Cog):
             "joueurs_present": [interaction.user],
             "type": None,
             "aucun_mort": False,
-            "inferiorite": 0,
-            "superiorite": 0,
             "points": 0,
-            "bonus": {"aucun_mort": 0, "attaque": 0, "defense": 0, "inferiorite": 0, "superiorite": 0},
-            "screens": [],
+            "bonus": {"aucun_mort": 0, "attaque": 0, "defense": 0, "superiorite": 0, "inferiorite": 0},
             "message": message,
             "view": view,
+            "screens": [],
         }
 
     @app_commands.command(name="reset_combat", description="Réinitialiser ton combat en cours")
@@ -66,30 +64,12 @@ class CombatCog(commands.Cog):
         else:
             await interaction.response.send_message("❌ Tu n'as pas de combat en cours.", ephemeral=True)
 
-    @app_commands.command(name="add_screen_file", description="Ajouter un ou plusieurs screens au combat")
-    @app_commands.describe(fichiers="Les fichiers images du combat")
-    async def add_screen_file(self, interaction: discord.Interaction, fichiers: discord.Attachment):
-        joueur_id = interaction.user.id
-        if joueur_id not in self.combats_en_cours:
-            await interaction.response.send_message("❌ Tu n'as pas de combat en cours.", ephemeral=True)
-            return
-
-        combat = self.combats_en_cours[joueur_id]
-
-        if len(combat["screens"]) >= MAX_SCREENS:
-            await interaction.response.send_message(f"❌ Limite de {MAX_SCREENS} screens par combat atteinte.", ephemeral=True)
-            return
-
-        combat["screens"].append(fichiers.url)
-        await interaction.response.send_message(f"✅ Screen ajouté ! ({len(combat['screens'])}/{MAX_SCREENS})", ephemeral=True)
-        await combat["view"].update_embed(combat)
-
 
 # ---------------------------
 # Vue principale avec boutons
 # ---------------------------
 class CombatView(discord.ui.View):
-    BONUS_POINTS = {"aucun_mort": 10, "attaque": 5, "defense": 5, "inferiorite": 3, "superiorite": -2}
+    BONUS_POINTS = {"aucun_mort": 10, "attaque": 5, "defense": 5, "superiorite": -2, "inferiorite": 3}
 
     def __init__(self, cog, joueur_id):
         super().__init__(timeout=None)
@@ -122,21 +102,31 @@ class CombatView(discord.ui.View):
             ephemeral=True
         )
 
-    @discord.ui.button(label="⬇️ Infériorité", style=discord.ButtonStyle.blurple)
-    async def inferiorite(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="🖼️ Ajouter screen(s)", style=discord.ButtonStyle.gray)
+    async def ajouter_screens(self, interaction: discord.Interaction, button: discord.ui.Button):
         combat = self.cog.combats_en_cours[self.joueur_id]
-        combat["bonus"]["inferiorite"] = self.BONUS_POINTS["inferiorite"]
-        combat["points"] = sum(combat["bonus"].values())
-        await self.update_embed(combat)
-        await interaction.response.defer()
 
-    @discord.ui.button(label="⬆️ Supériorité", style=discord.ButtonStyle.blurple)
-    async def superiorite(self, interaction: discord.Interaction, button: discord.ui.Button):
-        combat = self.cog.combats_en_cours[self.joueur_id]
-        combat["bonus"]["superiorite"] = self.BONUS_POINTS["superiorite"]
-        combat["points"] = sum(combat["bonus"].values())
+        def check(msg):
+            return msg.author.id == self.joueur_id and msg.attachments
+
+        await interaction.response.send_message(
+            f"Envoie jusqu'à {MAX_SCREENS - len(combat['screens'])} screen(s) dans ce canal.",
+            ephemeral=True
+        )
+
+        try:
+            msg = await self.cog.bot.wait_for("message", check=check, timeout=300)
+        except asyncio.TimeoutError:
+            await interaction.followup.send("⏰ Temps écoulé, screens non ajoutés.", ephemeral=True)
+            return
+
+        # Ajouter les screens
+        for att in msg.attachments:
+            if len(combat["screens"]) < MAX_SCREENS:
+                combat["screens"].append(att.url)
+
         await self.update_embed(combat)
-        await interaction.response.defer()
+        await interaction.followup.send(f"✅ {len(msg.attachments)} screen(s) ajoutés.", ephemeral=True)
 
     async def set_type(self, interaction: discord.Interaction, combat_type: str):
         combat = self.cog.combats_en_cours[self.joueur_id]
@@ -150,9 +140,7 @@ class CombatView(discord.ui.View):
         points_lines = [
             f"🗡️ Attaque : +{combat['bonus']['attaque']} pts",
             f"🛡️ Défense : +{combat['bonus']['defense']} pts",
-            f"❎ Aucun mort : +{combat['bonus']['aucun_mort']} pts",
-            f"⬇️ Infériorité : +{combat['bonus']['inferiorite']} pts",
-            f"⬆️ Supériorité : {combat['bonus']['superiorite']} pts"
+            f"❎ Aucun mort : +{combat['bonus']['aucun_mort']} pts"
         ]
         embed = discord.Embed(
             title="📊 Ajout d’un combat au ladder purgatoire",
@@ -165,7 +153,7 @@ class CombatView(discord.ui.View):
         )
         embed.add_field(name="💠 Points du combat", value="\n".join(points_lines))
         embed.add_field(name="💰 Points par joueur", value=f"{combat['points']} pts")
-        embed.add_field(name="🖼️ Screens", value=f"{len(combat['screens'])} screen(s) ajoutés")
+        embed.add_field(name="🖼️ Screens ajoutés", value=f"{len(combat['screens'])} / {MAX_SCREENS}")
         await combat["message"].edit(embed=embed, view=combat["view"])
 
 
@@ -193,6 +181,7 @@ class JoueurSelect(discord.ui.UserSelect):
             if member not in combat["joueurs_present"] and len(combat["joueurs_present"]) < MAX_JOUEURS:
                 combat["joueurs_present"].append(member)
 
+        # Propager le score actuel à tous les joueurs
         combat["points"] = sum(combat["bonus"].values())
 
         await interaction.response.edit_message(content="✅ Joueurs ajoutés !", view=None)
