@@ -97,31 +97,32 @@ class LeaderboardCog(commands.Cog):
             f"✅ Leaderboard créé avec succès dans {canal.mention}", ephemeral=True
         )
 
-    # ---------------------------
-    # Mise à jour automatique
-    # ---------------------------
-    async def update_leaderboard_message(self, leaderboard):
-        """Met à jour l'embed avec le classement trié"""
-        msg = leaderboard["message"]
+    async def update_leaderboard(self, leaderboard_id):
+        """Met à jour l'embed d'un leaderboard existant avec le classement actuel"""
+        if leaderboard_id not in self.leaderboards:
+            return
+
+        leaderboard = self.leaderboards[leaderboard_id]
         classement = leaderboard["classement"]
 
+        # Construire la liste de classement triée par points décroissants
         if classement:
-            # Trier par points décroissants
             sorted_classement = sorted(classement.items(), key=lambda x: x[1], reverse=True)
-            value = "\n".join([f"<@{user_id}> : {points} pts" for user_id, points in sorted_classement])
+            classement_text = "\n".join(f"<@{joueur_id}> : {points} pts" for joueur_id, points in sorted_classement)
         else:
-            value = "*(vide pour l’instant)*"
+            classement_text = "*(vide pour l’instant)*"
 
         embed = discord.Embed(
-            title=f"📊 Leaderboard purgatoire - {leaderboard['cible']}",
+            title="📊 Leaderboard purgatoire",
+            description=f"🎯 **Cible :** {leaderboard['cible']}",
             color=0x5865F2
         )
-        embed.add_field(name="Début :", value=leaderboard["debut"].strftime("%d/%m/%Y %H:%M"), inline=False)
-        embed.add_field(name="Fin :", value=leaderboard["fin"].strftime("%d/%m/%Y %H:%M"), inline=False)
-        embed.add_field(name="🏆 Classement", value=value, inline=False)
-        embed.set_footer(text=f"Créé par {msg.author.display_name}")
+        embed.add_field(name="Début :", value=leaderboard['debut'].strftime("%d/%m/%Y %H:%M"), inline=False)
+        embed.add_field(name="Fin :", value=leaderboard['fin'].strftime("%d/%m/%Y %H:%M"), inline=False)
+        embed.add_field(name="🏆 Classement", value=classement_text, inline=False)
+        embed.set_footer(text="Mise à jour automatique")
 
-        await msg.edit(embed=embed)
+        await leaderboard["message"].edit(embed=embed)
 
 
 # Fonction pour charger le cog
