@@ -152,10 +152,17 @@ class CombatView(discord.ui.View):
 
     @discord.ui.button(label="✅ Valider combat", style=discord.ButtonStyle.green)
     async def valider_combat(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Vérifie que l'utilisateur a le rôle ladder
+        roles_ids = [role.id for role in interaction.user.roles]
+        if LADDER_ROLE_ID not in roles_ids:
+            await interaction.response.send_message(
+                "❌ Seuls les membres du rôle ladder peuvent valider le combat.", ephemeral=True
+            )
+            return
+
         combat = self.cog.combats_en_cours[self.joueur_id]
         role = interaction.guild.get_role(LADDER_ROLE_ID)
 
-        # Création de l'embed final
         points_lines = []
         if combat['bonus']['attaque'] > 0:
             points_lines.append(f"🗡️ Attaque : +{combat['bonus']['attaque']} pts")
@@ -176,21 +183,18 @@ class CombatView(discord.ui.View):
             name="👥 Joueurs présents",
             value=", ".join([m.mention for m in combat["joueurs_present"]])
         )
-        embed.add_field(name="💠 Points du combat", value="\n".join(points_lines))
+        embed.add_field(name="💠 Points du combat", value="\n".join(points_lines) if points_lines else "—")
         embed.add_field(name="💰 Points par joueur", value=f"{combat['points']} pts")
         if combat['screens']:
             embed.add_field(name="🖼️ Screens", value="\n".join(combat['screens']))
 
-        # Envoi du message final avec ping du rôle
         await interaction.response.send_message(
             content=f"{role.mention} merci de valider le résultat du combat ⏳",
             embed=embed,
             allowed_mentions=discord.AllowedMentions(roles=True)
         )
 
-        # Supprimer le combat de la mémoire
         del self.cog.combats_en_cours[self.joueur_id]
-
 
     async def set_type(self, interaction: discord.Interaction, combat_type: str):
         combat = self.cog.combats_en_cours[self.joueur_id]
