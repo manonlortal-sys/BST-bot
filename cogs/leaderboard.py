@@ -19,13 +19,26 @@ class LeaderboardCog(commands.Cog):
     async def cog_load(self):
         print("✅ Cog Leaderboard chargé et prêt")
 
-    @app_commands.command(name="new", description="Créer un nouveau leaderboard purgatoire")
+    @app_commands.command(
+        name="new",
+        description="Créer un nouveau leaderboard purgatoire"
+    )
     @app_commands.describe(
         cible="Nom de la cible du purgatoire",
         date_debut="Date de début (JJ/MM/AAAA)",
-        date_fin="Date de fin (JJ/MM/AAAA)"
+        heure_debut="Heure de début (HH:MM, 24h)",
+        date_fin="Date de fin (JJ/MM/AAAA)",
+        heure_fin="Heure de fin (HH:MM, 24h)"
     )
-    async def new(self, interaction: discord.Interaction, cible: str, date_debut: str, date_fin: str):
+    async def new(
+        self,
+        interaction: discord.Interaction,
+        cible: str,
+        date_debut: str,
+        heure_debut: str,
+        date_fin: str,
+        heure_fin: str
+    ):
         # Vérification des rôles
         roles_ids = [role.id for role in interaction.user.roles]
         if ROLE_LADDER_ID not in roles_ids and ROLE_LEAD_ID not in roles_ids:
@@ -34,39 +47,42 @@ class LeaderboardCog(commands.Cog):
             )
             return
 
-        # Conversion dates en datetime pour validation simple
+        # Conversion dates et heures en datetime
         try:
-            debut_dt = datetime.strptime(date_debut, "%d/%m/%Y")
-            fin_dt = datetime.strptime(date_fin, "%d/%m/%Y")
+            debut_dt = datetime.strptime(f"{date_debut} {heure_debut}", "%d/%m/%Y %H:%M")
+            fin_dt = datetime.strptime(f"{date_fin} {heure_fin}", "%d/%m/%Y %H:%M")
             if fin_dt < debut_dt:
                 await interaction.response.send_message(
-                    "❌ La date de fin ne peut pas être avant la date de début.", ephemeral=True
+                    "❌ La date et l'heure de fin ne peuvent pas être avant celles du début.", ephemeral=True
                 )
                 return
         except ValueError:
             await interaction.response.send_message(
-                "❌ Format de date invalide. Utilise JJ/MM/AAAA.", ephemeral=True
+                "❌ Format invalide. Dates JJ/MM/AAAA et heures HH:MM.", ephemeral=True
             )
             return
 
         # Préparer l'embed
         embed = discord.Embed(
-            title=f"📊 Nouveau leaderboard purgatoire",
-            description=f"🎯 **Cible du purgatoire :** {cible}\n"
-                        f"📅 **Durée :** {date_debut} → {date_fin}",
+            title="📊 Nouveau leaderboard purgatoire",
+            description=f"🎯 **Cible du purgatoire :** {cible}",
             color=0x5865F2
         )
+        embed.add_field(name="Début :", value=debut_dt.strftime("%d/%m/%Y %H:%M"), inline=False)
+        embed.add_field(name="Fin :", value=fin_dt.strftime("%d/%m/%Y %H:%M"), inline=False)
         embed.add_field(name="🏆 Classement", value="*(vide pour l’instant)*", inline=False)
         embed.set_footer(text=f"Créé par {interaction.user.display_name}")
 
         # Envoyer dans le canal prévu
         canal = self.bot.get_channel(CANAL_LEADERBOARD_ID)
         if canal is None:
-            await interaction.response.send_message("❌ Impossible de trouver le canal du leaderboard.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ Impossible de trouver le canal du leaderboard.", ephemeral=True
+            )
             return
 
         msg = await canal.send(
-            content=f"<@&{ROLE_MEMBRES_ID}> merci de valider le leaderboard ⏳",
+            content=f"<@&{ROLE_MEMBRES_ID}> nouveau purgatoire ouvert ! ⏳",
             embed=embed
         )
 
@@ -82,6 +98,7 @@ class LeaderboardCog(commands.Cog):
         await interaction.response.send_message(
             f"✅ Leaderboard créé avec succès dans {canal.mention}", ephemeral=True
         )
+
 
 # Fonction pour charger le cog
 async def setup(bot):
