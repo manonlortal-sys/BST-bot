@@ -4,6 +4,8 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 
+MAX_JOUEURS = 4
+
 class CombatCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -35,35 +37,37 @@ class CombatCog(commands.Cog):
             "points": 0
         }
 
-        # Créer un embed prévisualisation simple
+        # Embed initial
         embed = discord.Embed(
             title="📝 Choix du type de combat",
-            description="Validation en attente ⏳\nCliquez sur un bouton pour choisir",
+            description="Validation en attente ⏳\nCliquez sur un bouton pour choisir le type",
             color=0x5865F2
         )
         embed.add_field(name="Joueurs présents", value=interaction.user.mention)
         embed.add_field(name="Points par joueur", value="0 points")
 
-        # Créer les boutons
+        # Vue avec boutons
         view = CombatTypeView(self, joueur_id)
-
         await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
 
 # ---------------------------
-# Vue avec boutons Attaque / Défense
+# Vue avec boutons Attaque / Défense + ajout joueurs
 # ---------------------------
 class CombatTypeView(discord.ui.View):
     def __init__(self, cog, joueur_id):
-        super().__init__(timeout=None)  # pas de timeout pour l’instant
+        super().__init__(timeout=None)
         self.cog = cog
         self.joueur_id = joueur_id
+        self.joueurs_choisis = []  # pour SelectMenu
+
+        # Ajouter SelectMenu après le choix type
+        self.add_item(JoueurSelect(self.cog, self.joueur_id))
 
     @discord.ui.button(label="🗡️ Attaque", style=discord.ButtonStyle.red)
     async def attaque_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.joueur_id:
             await interaction.response.send_message("❌ Ce n'est pas ton combat.", ephemeral=True)
             return
-
         self.cog.combats_en_cours[self.joueur_id]["type"] = "Attaque"
         await self.update_embed(interaction)
 
@@ -72,21 +76,53 @@ class CombatTypeView(discord.ui.View):
         if interaction.user.id != self.joueur_id:
             await interaction.response.send_message("❌ Ce n'est pas ton combat.", ephemeral=True)
             return
-
         self.cog.combats_en_cours[self.joueur_id]["type"] = "Défense"
         await self.update_embed(interaction)
 
     async def update_embed(self, interaction: discord.Interaction):
         combat = self.cog.combats_en_cours[self.joueur_id]
+        joueurs_mentions = ", ".join([u.mention for u in combat["joueurs_present"]])
         embed = discord.Embed(
-            title=f"📝 Type de combat choisi : {combat['type']}",
+            title=f"📝 Type de combat choisi : {combat['type']}" if combat["type"] else "📝 Choix du type de combat",
             description="Validation en attente ⏳",
             color=0x5865F2
         )
-        embed.add_field(name="Joueurs présents", value=interaction.user.mention)
+        embed.add_field(name="Joueurs présents", value=joueurs_mentions)
         embed.add_field(name="Points par joueur", value=f"{combat['points']} points")
-
         await interaction.response.edit_message(embed=embed, view=self)
+
+# ---------------------------
+# SelectMenu pour ajouter les joueurs
+# ---------------------------
+class JoueurSelect(discord.ui.Select):
+    def __init__(self, cog, joueur_id):
+        self.cog = cog
+        self.joueur_id = joueur_id
+
+        options = [
+            discord.SelectOption(label=member.name, value=str(member.id))
+            for member in cog.bot.get_all_members()
+        ]
+
+        super().__init__(placeholder="Ajouter des joueurs (max 4)", min_values=0, max_values=MAX_JOUEURS-1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.joueur_id:
+            await interaction.response.send_message("❌ Ce n'est pas ton combat.", ephemeral=True)
+            return
+
+        combat = self.cog.combats_en_cours[self.joueur_id]
+
+        # Limiter à max 4 joueurs
+        for user_id_str in self.values:
+            member = interaction.guild.get_member(int(user_id_str))
+            if member and member not in combat["joueurs_present"]:
+                if len(combat["joueurs_present"]) < MAX_JOUEURS:
+                    combat["joueurs_present"].append(member)
+
+        # Mettre à jour l’embed
+        view = self.view
+        await view.update_embed(interaction)
 
 # ---------------------------
 # Fonction pour charger le cog depuis main.py
