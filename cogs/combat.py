@@ -25,13 +25,6 @@ class CombatCog(commands.Cog):
             )
             return
 
-        self.combats_en_cours[joueur_id] = {
-            "status": "en_cours",
-            "joueurs_present": [interaction.user],
-            "type": None,
-            "points": 0
-        }
-
         embed = discord.Embed(
             title="📝 Choix du type de combat",
             description="Validation en attente ⏳\nCliquez sur un bouton pour choisir le type",
@@ -42,6 +35,16 @@ class CombatCog(commands.Cog):
 
         view = CombatView(self, joueur_id)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
+        # On récupère le message du combat
+        message = await interaction.original_response()
+
+        self.combats_en_cours[joueur_id] = {
+            "status": "en_cours",
+            "joueurs_present": [interaction.user],
+            "type": None,
+            "points": 0,
+            "message": message  # Stocker la référence au message principal
+        }
 
     @app_commands.command(name="reset_combat", description="Réinitialiser ton combat en cours")
     async def reset_combat(self, interaction: discord.Interaction):
@@ -101,7 +104,7 @@ class CombatView(discord.ui.View):
             value=", ".join([m.mention for m in combat["joueurs_present"]])
         )
         embed.add_field(name="Points par joueur", value=f"{combat['points']} points")
-        await interaction.response.edit_message(embed=embed, view=self)
+        await combat["message"].edit(embed=embed, view=self)
 
 
 # ---------------------------
@@ -109,7 +112,7 @@ class CombatView(discord.ui.View):
 # ---------------------------
 class AjouterJoueursView(discord.ui.View):
     def __init__(self, cog, joueur_id):
-        super().__init__(timeout=None)
+        super().__init__(timeout=900)
         self.cog = cog
         self.joueur_id = joueur_id
         self.add_item(JoueurSelect(cog, joueur_id))
@@ -128,6 +131,8 @@ class JoueurSelect(discord.ui.UserSelect):
             if member not in combat["joueurs_present"] and len(combat["joueurs_present"]) < MAX_JOUEURS:
                 combat["joueurs_present"].append(member)
 
+        # Met à jour le vrai message du combat
+        combat_message = combat["message"]
         embed = discord.Embed(
             title=f"📝 Type de combat : {combat['type']}",
             description="Validation en attente ⏳",
@@ -138,7 +143,10 @@ class JoueurSelect(discord.ui.UserSelect):
             value=", ".join([m.mention for m in combat["joueurs_present"]])
         )
         embed.add_field(name="Points par joueur", value=f"{combat['points']} points")
-        await interaction.response.edit_message(embed=embed, view=interaction.message.components[0].view)
+        await combat_message.edit(embed=embed, view=combat_message.components[0].view)
+
+        # Message éphémère pour confirmer
+        await interaction.response.send_message("✅ Joueurs ajoutés !", ephemeral=True)
 
 
 # ---------------------------
