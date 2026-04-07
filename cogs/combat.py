@@ -32,6 +32,7 @@ class CombatCog(commands.Cog):
             color=0x5865F2
         )
         embed.add_field(name="Joueurs présents", value=interaction.user.mention)
+        embed.add_field(name="Aucun mort", value="❌ Non")
         embed.add_field(name="Points par joueur", value="0 points")
 
         await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
@@ -41,9 +42,11 @@ class CombatCog(commands.Cog):
             "status": "en_cours",
             "joueurs_present": [interaction.user],
             "type": None,
+            "aucun_mort": False,
             "points": 0,
             "message": message,
-            "view": view  # On stocke la view ici pour éviter les erreurs
+            "view": view,
+            "points_joueurs": {interaction.user.id: 0}
         }
 
     @app_commands.command(name="reset_combat", description="Réinitialiser ton combat en cours")
@@ -81,6 +84,26 @@ class CombatView(discord.ui.View):
         await interaction.response.defer()
         await self.set_type(interaction, "Défense")
 
+    @discord.ui.button(label="❎ Aucun mort", style=discord.ButtonStyle.gray)
+    async def aucun_mort(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.joueur_id:
+            await interaction.response.send_message("❌ Ce n'est pas ton combat.", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+        combat = self.cog.combats_en_cours[self.joueur_id]
+        combat["aucun_mort"] = not combat["aucun_mort"]
+
+        # On peut ajouter des points bonus si Aucun mort est choisi
+        if combat["aucun_mort"]:
+            for member in combat["joueurs_present"]:
+                combat["points_joueurs"][member.id] = combat["points_joueurs"].get(member.id, 0) + 10
+        else:
+            for member in combat["joueurs_present"]:
+                combat["points_joueurs"][member.id] = max(combat["points_joueurs"].get(member.id, 0) - 10, 0)
+
+        await self.update_embed(combat)
+
     @discord.ui.button(label="➕ Ajouter joueurs", style=discord.ButtonStyle.blurple)
     async def ajouter_joueurs(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.joueur_id:
@@ -97,9 +120,11 @@ class CombatView(discord.ui.View):
     async def set_type(self, interaction: discord.Interaction, combat_type: str):
         combat = self.cog.combats_en_cours[self.joueur_id]
         combat["type"] = combat_type
+        await self.update_embed(combat)
 
+    async def update_embed(self, combat):
         embed = discord.Embed(
-            title=f"📝 Type de combat choisi : {combat_type}",
+            title=f"📝 Type de combat : {combat['type'] or 'Non choisi'}",
             description="Validation en attente ⏳",
             color=0x5865F2
         )
@@ -107,7 +132,14 @@ class CombatView(discord.ui.View):
             name="Joueurs présents",
             value=", ".join([m.mention for m in combat["joueurs_present"]])
         )
-        embed.add_field(name="Points par joueur", value=f"{combat['points']} points")
+        embed.add_field(name="Aucun mort", value="✅ Oui" if combat["aucun_mort"] else "❌ Non")
+
+        points_text = "\n".join([
+            f"{self.cog.bot.get_user(uid).mention}: {pts} pts"
+            for uid, pts in combat["points_joueurs"].items()
+        ])
+        embed.add_field(name="Points par joueur", value=points_text or "0 points")
+
         await combat["message"].edit(embed=embed, view=combat["view"])
 
 
@@ -134,23 +166,10 @@ class JoueurSelect(discord.ui.UserSelect):
         for member in self.values:
             if member not in combat["joueurs_present"] and len(combat["joueurs_present"]) < MAX_JOUEURS:
                 combat["joueurs_present"].append(member)
+                combat["points_joueurs"][member.id] = 0
 
-        await interaction.response.defer()  # ✅ Evite l’échec de l’interaction
-
-        # Met à jour le message principal avec la view stockée
-        combat_message = combat["message"]
-        embed = discord.Embed(
-            title=f"📝 Type de combat : {combat['type']}",
-            description="Validation en attente ⏳",
-            color=0x5865F2
-        )
-        embed.add_field(
-            name="Joueurs présents",
-            value=", ".join([m.mention for m in combat["joueurs_present"]])
-        )
-        embed.add_field(name="Points par joueur", value=f"{combat['points']} points")
-
-        await combat_message.edit(embed=embed, view=combat["view"])
+        await interaction.response.defer()
+        await combat["view"].update_embed(combat)
 
 
 # ---------------------------
