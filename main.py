@@ -27,9 +27,24 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# ---------------------------
+# ID serveur pour sync immédiate
+# ---------------------------
+GUILD_ID = 123456789012345678  # Remplace par ton ID de serveur Discord
+
+# ---------------------------
+# Events
+# ---------------------------
 @bot.event
 async def on_ready():
     print(f"Bot connecté en tant que {bot.user}")
+    # Synchronisation des commandes slash pour ton serveur
+    try:
+        guild = discord.Object(id=GUILD_ID)
+        await bot.tree.sync(guild=guild)
+        print("✅ Commandes slash synchronisées pour le serveur")
+    except Exception as e:
+        print(f"❌ Erreur sync commandes: {e}")
 
 # ---------------------------
 # Charger les cogs
