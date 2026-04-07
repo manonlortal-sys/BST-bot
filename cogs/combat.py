@@ -221,4 +221,57 @@ class CombatView(discord.ui.View):
             value=", ".join([m.mention for m in combat["joueurs_present"]])
         )
         embed.add_field(name="💠 Points du combat", value="\n".join(points_lines) if points_lines else "—")
-        embed.add_field(name="💰 Points par joueur
+        embed.add_field(name="💰 Points par joueur", value=f"{combat['points']} pts")
+        embed.add_field(name="🖼️ Screens ajoutés", value=f"{len(combat['screens'])} / {MAX_SCREENS}")
+        await combat["message"].edit(embed=embed, view=combat["view"])
+
+
+# ---------------------------
+# Vue avec menu de sélection des joueurs
+# ---------------------------
+class AjouterJoueursView(discord.ui.View):
+    def __init__(self, cog, joueur_id):
+        super().__init__(timeout=900)
+        self.cog = cog
+        self.joueur_id = joueur_id
+        self.add_item(JoueurSelect(cog, joueur_id))
+
+
+class JoueurSelect(discord.ui.UserSelect):
+    def __init__(self, cog, joueur_id):
+        super().__init__(max_values=MAX_JOUEURS, placeholder="Recherche un membre...")
+        self.cog = cog
+        self.joueur_id = joueur_id
+
+    async def callback(self, interaction: discord.Interaction):
+        combat = self.cog.combats_en_cours[self.joueur_id]
+        for member in self.values:
+            if member not in combat["joueurs_present"] and len(combat["joueurs_present"]) < MAX_JOUEURS:
+                combat["joueurs_present"].append(member)
+        combat["points"] = sum(combat["bonus"].values())
+        await interaction.response.edit_message(content="✅ Joueurs ajoutés !", view=None)
+        await combat["view"].update_embed(combat)
+
+
+# ---------------------------
+# Vue pour validation ladder
+# ---------------------------
+class ValiderLadderView(discord.ui.View):
+    def __init__(self, combat, cog):
+        super().__init__(timeout=None)
+        self.combat = combat
+        self.cog = cog
+
+    @discord.ui.button(label="✅ Valider le combat", style=discord.ButtonStyle.green)
+    async def valider(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if LADDER_ROLE_ID not in [r.id for r in interaction.user.roles]:
+            await interaction.response.send_message("❌ Seulement les membres du ladder peuvent valider.", ephemeral=True)
+            return
+
+        # Mettre à jour le leaderboard via le cog leaderboard
+        leaderboard_cog = self.cog.bot.get_cog("LeaderboardCog")
+        if leaderboard_cog:
+            for player in self.combat["joueurs_present"]:
+                leaderboard_cog.add_points(player.id, self.combat["points"])
+
+        await interaction.response.edit_message(content="✅ Combat validé et leaderboard mis à jour !", view=None)
