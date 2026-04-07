@@ -84,7 +84,7 @@ class CombatView(discord.ui.View):
 
     @discord.ui.button(label="🛡️ Défense", style=discord.ButtonStyle.red)
     async def defense(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.set_type(interaction, "Défense")
+        await self.set_type(interaction, "Defense")
 
     @discord.ui.button(label="➕ Ajouter joueurs", style=discord.ButtonStyle.blurple)
     async def ajouter_joueurs(self, interaction: discord.Interaction, button: discord.ui.Button):
