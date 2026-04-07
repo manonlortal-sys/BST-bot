@@ -25,31 +25,26 @@ intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+class MyBot(commands.Bot):
+    def __init__(self):
+        super().__init__(command_prefix="!", intents=intents)
 
-# ---------------------------
-# Events
-# ---------------------------
+    async def setup_hook(self):
+        # Charger les cogs avant la connexion
+        await self.load_extension("cogs.combat")
+        # Synchronisation globale des commandes slash
+        await self.tree.sync()
+        print("✅ Cogs chargés et commandes slash synchronisées")
+
+bot = MyBot()
+
 @bot.event
 async def on_ready():
     print(f"Bot connecté en tant que {bot.user}")
-    # Synchronisation globale des commandes slash
-    try:
-        await bot.tree.sync()
-        print("✅ Commandes slash synchronisées globalement")
-    except Exception as e:
-        print(f"❌ Erreur sync commandes: {e}")
-
-# ---------------------------
-# Charger les cogs
-# ---------------------------
-async def load_cogs():
-    await bot.load_extension("cogs.combat")
 
 # ---------------------------
 # Lancement Flask + Discord
 # ---------------------------
 if __name__ == "__main__":
     threading.Thread(target=run_flask).start()
-    bot.loop.create_task(load_cogs())
     bot.run(os.environ["DISCORD_TOKEN"])
