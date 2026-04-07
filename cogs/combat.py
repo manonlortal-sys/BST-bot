@@ -67,10 +67,18 @@ class CombatView(discord.ui.View):
 
     @discord.ui.button(label="🗡️ Attaque", style=discord.ButtonStyle.red)
     async def attaque(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.joueur_id:
+            await interaction.response.send_message("❌ Ce n'est pas ton combat.", ephemeral=True)
+            return
+        await interaction.response.defer()
         await self.set_type(interaction, "Attaque")
 
     @discord.ui.button(label="🛡️ Défense", style=discord.ButtonStyle.green)
     async def defense(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.joueur_id:
+            await interaction.response.send_message("❌ Ce n'est pas ton combat.", ephemeral=True)
+            return
+        await interaction.response.defer()
         await self.set_type(interaction, "Défense")
 
     @discord.ui.button(label="➕ Ajouter joueurs", style=discord.ButtonStyle.blurple)
@@ -87,12 +95,8 @@ class CombatView(discord.ui.View):
         )
 
     async def set_type(self, interaction: discord.Interaction, combat_type: str):
-        if interaction.user.id != self.joueur_id:
-            await interaction.response.send_message("❌ Ce n'est pas ton combat.", ephemeral=True)
-            return
-
-        self.cog.combats_en_cours[self.joueur_id]["type"] = combat_type
         combat = self.cog.combats_en_cours[self.joueur_id]
+        combat["type"] = combat_type
 
         embed = discord.Embed(
             title=f"📝 Type de combat choisi : {combat_type}",
@@ -131,6 +135,9 @@ class JoueurSelect(discord.ui.UserSelect):
             if member not in combat["joueurs_present"] and len(combat["joueurs_present"]) < MAX_JOUEURS:
                 combat["joueurs_present"].append(member)
 
+        # ✅ Déférer l'interaction avant edit
+        await interaction.response.defer()
+
         # Met à jour le vrai message du combat
         combat_message = combat["message"]
         embed = discord.Embed(
@@ -143,14 +150,5 @@ class JoueurSelect(discord.ui.UserSelect):
             value=", ".join([m.mention for m in combat["joueurs_present"]])
         )
         embed.add_field(name="Points par joueur", value=f"{combat['points']} points")
+
         await combat_message.edit(embed=embed, view=combat_message.components[0].view)
-
-        # Message éphémère pour confirmer
-        await interaction.response.send_message("✅ Joueurs ajoutés !", ephemeral=True)
-
-
-# ---------------------------
-# Fonction pour charger le cog
-# ---------------------------
-async def setup(bot):
-    await bot.add_cog(CombatCog(bot))
