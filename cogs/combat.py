@@ -71,7 +71,6 @@ class CombatTypeView(discord.ui.View):
         super().__init__(timeout=None)
         self.cog = cog
         self.joueur_id = joueur_id
-        # On n'ajoute PAS le SelectMenu ici pour éviter le crash
 
     @discord.ui.button(label="🗡️ Attaque", style=discord.ButtonStyle.red)
     async def attaque_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -79,15 +78,17 @@ class CombatTypeView(discord.ui.View):
             await interaction.response.send_message("❌ Ce n'est pas ton combat.", ephemeral=True)
             return
         self.cog.combats_en_cours[self.joueur_id]["type"] = "Attaque"
-        # Ajouter maintenant le SelectMenu
-        if not any(isinstance(i, JoueurSelect) for i in self.children):
-            options = [
-                discord.SelectOption(label=member.name, value=str(member.id))
-                for member in interaction.guild.members if not member.bot and member != interaction.user
-            ]
-            if options:  # seulement si on a des options
-                self.add_item(JoueurSelect(self.cog, self.joueur_id, options))
-        await self.update_embed(interaction)
+
+        # Créer une nouvelle view avec SelectMenu
+        new_view = CombatTypeView(self.cog, self.joueur_id)
+        options = [
+            discord.SelectOption(label=member.name, value=str(member.id))
+            for member in interaction.guild.members if not member.bot and member != interaction.user
+        ]
+        if options:
+            new_view.add_item(JoueurSelect(self.cog, self.joueur_id, options))
+
+        await new_view.update_embed(interaction)
 
     @discord.ui.button(label="🛡️ Défense", style=discord.ButtonStyle.green)
     async def defense_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -95,15 +96,17 @@ class CombatTypeView(discord.ui.View):
             await interaction.response.send_message("❌ Ce n'est pas ton combat.", ephemeral=True)
             return
         self.cog.combats_en_cours[self.joueur_id]["type"] = "Défense"
-        # Ajouter maintenant le SelectMenu
-        if not any(isinstance(i, JoueurSelect) for i in self.children):
-            options = [
-                discord.SelectOption(label=member.name, value=str(member.id))
-                for member in interaction.guild.members if not member.bot and member != interaction.user
-            ]
-            if options:
-                self.add_item(JoueurSelect(self.cog, self.joueur_id, options))
-        await self.update_embed(interaction)
+
+        # Créer une nouvelle view avec SelectMenu
+        new_view = CombatTypeView(self.cog, self.joueur_id)
+        options = [
+            discord.SelectOption(label=member.name, value=str(member.id))
+            for member in interaction.guild.members if not member.bot and member != interaction.user
+        ]
+        if options:
+            new_view.add_item(JoueurSelect(self.cog, self.joueur_id, options))
+
+        await new_view.update_embed(interaction)
 
     async def update_embed(self, interaction: discord.Interaction):
         combat = self.cog.combats_en_cours[self.joueur_id]
