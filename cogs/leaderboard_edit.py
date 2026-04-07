@@ -16,17 +16,15 @@ class LeaderboardEditCog(commands.Cog):
 
     @app_commands.command(
         name="modifier_joueur",
-        description="Modifier manuellement les points d’un joueur dans le leaderboard"
+        description="Modifier manuellement les points d’un joueur dans le leaderboard du canal"
     )
     @app_commands.describe(
-        message_id="ID du message du leaderboard à modifier",
         joueur="Le joueur dont tu veux modifier les points",
         nouveau_total="Nouveau total de points à mettre"
     )
     async def modifier_joueur(
         self,
         interaction: discord.Interaction,
-        message_id: str,
         joueur: discord.Member,
         nouveau_total: int
     ):
@@ -38,7 +36,7 @@ class LeaderboardEditCog(commands.Cog):
             )
             return
 
-        # Récupérer le leaderboard correspondant
+        # Récupérer le leaderboard du canal
         leaderboard_cog = self.bot.get_cog("LeaderboardCog")
         if leaderboard_cog is None:
             await interaction.response.send_message(
@@ -46,21 +44,18 @@ class LeaderboardEditCog(commands.Cog):
             )
             return
 
-        try:
-            msg_id_int = int(message_id)
-        except ValueError:
+        # Cherche le leaderboard dans ce canal
+        leaderboard = None
+        for lb in leaderboard_cog.leaderboards.values():
+            if lb["message"].channel.id == interaction.channel.id:
+                leaderboard = lb
+                break
+
+        if leaderboard is None:
             await interaction.response.send_message(
-                "❌ L’ID du message doit être un nombre.", ephemeral=True
+                "❌ Aucun leaderboard trouvé dans ce canal.", ephemeral=True
             )
             return
-
-        if msg_id_int not in leaderboard_cog.leaderboards:
-            await interaction.response.send_message(
-                "❌ Leaderboard introuvable pour ce message.", ephemeral=True
-            )
-            return
-
-        leaderboard = leaderboard_cog.leaderboards[msg_id_int]
 
         ancien_total = leaderboard["classement"].get(joueur.id, 0)
         leaderboard["classement"][joueur.id] = nouveau_total
