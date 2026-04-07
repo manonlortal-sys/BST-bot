@@ -32,7 +32,10 @@ class CombatCog(commands.Cog):
             color=0x5865F2
         )
         embed.add_field(name="👥 Joueurs présents", value=interaction.user.mention)
-        embed.add_field(name="💠 Points du combat", value="🗡️ Attaque : +0 pts\n🛡️ Défense : +0 pts\n❎ Aucun mort : +0 pts")
+        embed.add_field(
+            name="💠 Points du combat",
+            value="🗡️ Attaque : +0 pts\n🛡️ Défense : +0 pts\n❎ Aucun mort : +0 pts"
+        )
         embed.add_field(name="💰 Points par joueur", value="0 pts")
 
         await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
@@ -89,6 +92,7 @@ class CombatView(discord.ui.View):
 
     @discord.ui.button(label="➕ Ajouter joueurs", style=discord.ButtonStyle.blurple)
     async def ajouter_joueurs(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Message éphémère avec juste le UserSelect
         view = AjouterJoueursView(self.cog, self.joueur_id)
         await interaction.response.send_message(
             "Sélectionne les joueurs à ajouter ⬇️",
@@ -105,12 +109,11 @@ class CombatView(discord.ui.View):
         await interaction.response.defer()
 
     async def update_embed(self, combat):
-        # Embed clair avec tous les points détaillés
-        points_lines = []
-        points_lines.append(f"🗡️ Attaque : +{combat['bonus']['attaque']} pts")
-        points_lines.append(f"🛡️ Défense : +{combat['bonus']['defense']} pts")
-        points_lines.append(f"❎ Aucun mort : +{combat['bonus']['aucun_mort']} pts")
-
+        points_lines = [
+            f"🗡️ Attaque : +{combat['bonus']['attaque']} pts",
+            f"🛡️ Défense : +{combat['bonus']['defense']} pts",
+            f"❎ Aucun mort : +{combat['bonus']['aucun_mort']} pts"
+        ]
         embed = discord.Embed(
             title="📊 Ajout d’un combat au ladder purgatoire",
             description="Validation en attente ⏳",
@@ -120,14 +123,8 @@ class CombatView(discord.ui.View):
             name="👥 Joueurs présents",
             value=", ".join([m.mention for m in combat["joueurs_present"]])
         )
-        embed.add_field(
-            name="💠 Points du combat",
-            value="\n".join(points_lines)
-        )
-        embed.add_field(
-            name="💰 Points par joueur",
-            value=f"{combat['points']} pts"
-        )
+        embed.add_field(name="💠 Points du combat", value="\n".join(points_lines))
+        embed.add_field(name="💰 Points par joueur", value=f"{combat['points']} pts")
         await combat["message"].edit(embed=embed, view=combat["view"])
 
 
@@ -144,7 +141,7 @@ class AjouterJoueursView(discord.ui.View):
 
 class JoueurSelect(discord.ui.UserSelect):
     def __init__(self, cog, joueur_id):
-        super().__init__(max_values=MAX_JOUEURS, placeholder="Sélectionne jusqu'à 4 joueurs")
+        super().__init__(max_values=MAX_JOUEURS, placeholder="Recherche un membre...")
         self.cog = cog
         self.joueur_id = joueur_id
 
@@ -158,8 +155,9 @@ class JoueurSelect(discord.ui.UserSelect):
         # Propager le score actuel à tous les joueurs
         combat["points"] = sum(combat["bonus"].values())
 
-        # Mettre à jour l'embed directement via l'interaction
-        await interaction.response.edit_message(embed=None, view=combat["view"])
+        # Mettre à jour le message éphémère (juste pour le select)
+        await interaction.response.edit_message(content="✅ Joueurs ajoutés !", view=None)
+        # Mettre à jour l'embed principal
         await combat["view"].update_embed(combat)
 
 
