@@ -1,6 +1,6 @@
 # cogs/combat.py (suite et mise à jour)
 
-LADDER_ROLE_ID = 1328097429525893192  # Remplace par l'ID réel du rôle ladder
+LADDER_ROLE_ID = 1459190410835660831  # Remplace par l'ID réel du rôle ladder
 
 class CombatView(discord.ui.View):
     BONUS_POINTS = {"aucun_mort": 3, "attaque": 5, "defense": 5, "sup": -2, "inf": 3}
