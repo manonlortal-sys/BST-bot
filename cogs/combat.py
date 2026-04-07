@@ -40,7 +40,6 @@ class CombatCog(commands.Cog):
         embed.add_field(name="Joueurs présents", value=interaction.user.mention)
         embed.add_field(name="Points par joueur", value="0 points")
 
-        # Vue unique avec boutons
         view = CombatView(self, joueur_id)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
 
@@ -55,7 +54,7 @@ class CombatCog(commands.Cog):
 
 
 # ---------------------------
-# Vue unique pour tout le combat
+# Vue principale avec boutons
 # ---------------------------
 class CombatView(discord.ui.View):
     def __init__(self, cog, joueur_id):
@@ -63,26 +62,26 @@ class CombatView(discord.ui.View):
         self.cog = cog
         self.joueur_id = joueur_id
 
-    # Attaque
     @discord.ui.button(label="🗡️ Attaque", style=discord.ButtonStyle.red)
     async def attaque(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.set_type(interaction, "Attaque")
 
-    # Défense
     @discord.ui.button(label="🛡️ Défense", style=discord.ButtonStyle.green)
     async def defense(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.set_type(interaction, "Défense")
 
-    # Ajouter joueurs
     @discord.ui.button(label="➕ Ajouter joueurs", style=discord.ButtonStyle.blurple)
     async def ajouter_joueurs(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.joueur_id:
             await interaction.response.send_message("❌ Ce n'est pas ton combat.", ephemeral=True)
             return
 
-        # On utilise un modal pour que l'utilisateur tape les noms des joueurs
-        modal = AjouterJoueursModal(self.cog, self.joueur_id)
-        await interaction.response.send_modal(modal)
+        view = AjouterJoueursView(self.cog, self.joueur_id)
+        await interaction.response.send_message(
+            "Sélectionne les joueurs à ajouter ⬇️",
+            view=view,
+            ephemeral=True
+        )
 
     async def set_type(self, interaction: discord.Interaction, combat_type: str):
         if interaction.user.id != self.joueur_id:
@@ -90,57 +89,54 @@ class CombatView(discord.ui.View):
             return
 
         self.cog.combats_en_cours[self.joueur_id]["type"] = combat_type
+        combat = self.cog.combats_en_cours[self.joueur_id]
+
         embed = discord.Embed(
             title=f"📝 Type de combat choisi : {combat_type}",
             description="Validation en attente ⏳",
             color=0x5865F2
         )
-        joueurs = self.cog.combats_en_cours[self.joueur_id]["joueurs_present"]
-        embed.add_field(name="Joueurs présents", value=", ".join([m.mention for m in joueurs]))
-        embed.add_field(name="Points par joueur", value=f"{self.cog.combats_en_cours[self.joueur_id]['points']} points")
+        embed.add_field(
+            name="Joueurs présents",
+            value=", ".join([m.mention for m in combat["joueurs_present"]])
+        )
+        embed.add_field(name="Points par joueur", value=f"{combat['points']} points")
         await interaction.response.edit_message(embed=embed, view=self)
 
 
 # ---------------------------
-# Modal pour ajouter les joueurs via texte (auto-complétion)
+# Vue avec menu de sélection des joueurs
 # ---------------------------
-class AjouterJoueursModal(discord.ui.Modal, title="Ajouter des joueurs (max 4)"):
-    joueurs = discord.ui.TextInput(
-        label="Mentions ou noms des joueurs séparés par une virgule",
-        style=discord.TextStyle.short,
-        placeholder="Ex: @Yohan, @Alex",
-        required=True,
-        max_length=200
-    )
-
+class AjouterJoueursView(discord.ui.View):
     def __init__(self, cog, joueur_id):
-        super().__init__()
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.joueur_id = joueur_id
+        self.add_item(JoueurSelect(cog, joueur_id))
+
+
+class JoueurSelect(discord.ui.UserSelect):
+    def __init__(self, cog, joueur_id):
+        super().__init__(max_values=MAX_JOUEURS, placeholder="Sélectionne jusqu'à 4 joueurs")
         self.cog = cog
         self.joueur_id = joueur_id
 
-    async def on_submit(self, interaction: discord.Interaction):
+    async def callback(self, interaction: discord.Interaction):
         combat = self.cog.combats_en_cours[self.joueur_id]
-        guild = interaction.guild
 
-        mentions = [name.strip() for name in self.joueurs.value.split(",")]
-        for m_name in mentions:
-            # tenter de récupérer le membre par mention ou nom
-            member = None
-            if m_name.startswith("<@") and m_name.endswith(">"):
-                member_id = int(m_name.replace("<@", "").replace(">", "").replace("!", ""))
-                member = guild.get_member(member_id)
-            else:
-                # rechercher par nom
-                member = discord.utils.find(lambda x: x.name == m_name, guild.members)
-            if member and member not in combat["joueurs_present"] and len(combat["joueurs_present"]) < MAX_JOUEURS:
+        for member in self.values:
+            if member not in combat["joueurs_present"] and len(combat["joueurs_present"]) < MAX_JOUEURS:
                 combat["joueurs_present"].append(member)
 
         embed = discord.Embed(
-            title=f"📝 Type de combat choisi : {combat['type']}",
+            title=f"📝 Type de combat : {combat['type']}",
             description="Validation en attente ⏳",
             color=0x5865F2
         )
-        embed.add_field(name="Joueurs présents", value=", ".join([m.mention for m in combat["joueurs_present"]]))
+        embed.add_field(
+            name="Joueurs présents",
+            value=", ".join([m.mention for m in combat["joueurs_present"]])
+        )
         embed.add_field(name="Points par joueur", value=f"{combat['points']} points")
         await interaction.response.edit_message(embed=embed, view=interaction.message.components[0].view)
 
