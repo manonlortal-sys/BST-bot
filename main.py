@@ -1,5 +1,3 @@
-# main.py
-
 from flask import Flask
 import threading
 import discord
@@ -30,8 +28,9 @@ class MyBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
-        # Charger les cogs avant la connexion
-        await self.load_extension("cogs.combat", "cogs.leaderboard")
+        # Charger les cogs avant la connexion, **un par un**
+        await self.load_extension("cogs.combat")
+        await self.load_extension("cogs.leaderboard")
         # Synchronisation globale des commandes slash
         await self.tree.sync()
         print("✅ Cogs chargés et commandes slash synchronisées")
