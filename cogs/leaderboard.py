@@ -1,5 +1,3 @@
-# cogs/leaderboard.py
-
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -98,6 +96,32 @@ class LeaderboardCog(commands.Cog):
         await interaction.response.send_message(
             f"✅ Leaderboard créé avec succès dans {canal.mention}", ephemeral=True
         )
+
+    # ---------------------------
+    # Mise à jour automatique
+    # ---------------------------
+    async def update_leaderboard_message(self, leaderboard):
+        """Met à jour l'embed avec le classement trié"""
+        msg = leaderboard["message"]
+        classement = leaderboard["classement"]
+
+        if classement:
+            # Trier par points décroissants
+            sorted_classement = sorted(classement.items(), key=lambda x: x[1], reverse=True)
+            value = "\n".join([f"<@{user_id}> : {points} pts" for user_id, points in sorted_classement])
+        else:
+            value = "*(vide pour l’instant)*"
+
+        embed = discord.Embed(
+            title=f"📊 Leaderboard purgatoire - {leaderboard['cible']}",
+            color=0x5865F2
+        )
+        embed.add_field(name="Début :", value=leaderboard["debut"].strftime("%d/%m/%Y %H:%M"), inline=False)
+        embed.add_field(name="Fin :", value=leaderboard["fin"].strftime("%d/%m/%Y %H:%M"), inline=False)
+        embed.add_field(name="🏆 Classement", value=value, inline=False)
+        embed.set_footer(text=f"Créé par {msg.author.display_name}")
+
+        await msg.edit(embed=embed)
 
 
 # Fonction pour charger le cog
