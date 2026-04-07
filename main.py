@@ -32,8 +32,15 @@ async def on_ready():
     print(f"Bot connecté en tant que {bot.user}")
 
 # ---------------------------
+# Charger les cogs
+# ---------------------------
+async def load_cogs():
+    await bot.load_extension("cogs.combat")
+
+# ---------------------------
 # Lancement Flask + Discord
 # ---------------------------
 if __name__ == "__main__":
     threading.Thread(target=run_flask).start()
+    bot.loop.create_task(load_cogs())
     bot.run(os.environ["DISCORD_TOKEN"])
