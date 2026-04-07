@@ -43,7 +43,19 @@ class CombatCog(commands.Cog):
         view = ChoixTypeView(self, joueur_id)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
 
+    @app_commands.command(name="reset_combat", description="Réinitialiser ton combat en cours")
+    async def reset_combat(self, interaction: discord.Interaction):
+        joueur_id = interaction.user.id
+        if joueur_id in self.combats_en_cours:
+            del self.combats_en_cours[joueur_id]
+            await interaction.response.send_message("✅ Ton combat en cours a été réinitialisé.", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Tu n'as pas de combat en cours.", ephemeral=True)
 
+
+# ---------------------------
+# Vue pour choisir Attaque / Défense
+# ---------------------------
 class ChoixTypeView(discord.ui.View):
     def __init__(self, cog, joueur_id):
         super().__init__(timeout=None)
@@ -74,12 +86,15 @@ class ChoixTypeView(discord.ui.View):
         embed.add_field(name="Joueurs présents", value=", ".join([m.mention for m in joueurs]))
         embed.add_field(name="Points par joueur", value=f"{self.cog.combats_en_cours[self.joueur_id]['points']} points")
 
-        # Nouveau bouton pour passer à l'ajout des joueurs
-        view = AjouterJoueursButton(self.cog, self.joueur_id)
+        # Bouton pour ajouter les joueurs dans le même message
+        view = AjouterJoueursView(self.cog, self.joueur_id)
         await interaction.response.edit_message(embed=embed, view=view)
 
 
-class AjouterJoueursButton(discord.ui.View):
+# ---------------------------
+# Bouton pour passer à l'ajout des joueurs
+# ---------------------------
+class AjouterJoueursView(discord.ui.View):
     def __init__(self, cog, joueur_id):
         super().__init__(timeout=None)
         self.cog = cog
@@ -101,10 +116,23 @@ class AjouterJoueursButton(discord.ui.View):
             await interaction.response.send_message("❌ Aucun membre à ajouter.", ephemeral=True)
             return
 
+        # Remplacer le bouton par le SelectMenu dans le même message
         view = JoueurSelectView(self.cog, self.joueur_id, options)
-        await interaction.response.send_message("Sélectionne les joueurs :", view=view, ephemeral=True)
+        embed = discord.Embed(
+            title=f"📝 Type de combat choisi : {combat['type']}",
+            description="Sélectionne les joueurs à ajouter 👥",
+            color=0x5865F2
+        )
+        joueurs_mentions = ", ".join([m.mention for m in combat["joueurs_present"]])
+        embed.add_field(name="Joueurs présents", value=joueurs_mentions)
+        embed.add_field(name="Points par joueur", value=f"{combat['points']} points")
+
+        await interaction.response.edit_message(embed=embed, view=view)
 
 
+# ---------------------------
+# View avec le SelectMenu pour ajouter les joueurs
+# ---------------------------
 class JoueurSelectView(discord.ui.View):
     def __init__(self, cog, joueur_id, options):
         super().__init__(timeout=None)
