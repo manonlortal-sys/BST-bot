@@ -25,6 +25,7 @@ class CombatCog(commands.Cog):
             )
             return
 
+        view = CombatView(self, joueur_id)
         embed = discord.Embed(
             title="📝 Choix du type de combat",
             description="Validation en attente ⏳\nCliquez sur un bouton pour choisir le type",
@@ -33,7 +34,6 @@ class CombatCog(commands.Cog):
         embed.add_field(name="Joueurs présents", value=interaction.user.mention)
         embed.add_field(name="Points par joueur", value="0 points")
 
-        view = CombatView(self, joueur_id)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
         message = await interaction.original_response()
 
@@ -42,7 +42,8 @@ class CombatCog(commands.Cog):
             "joueurs_present": [interaction.user],
             "type": None,
             "points": 0,
-            "message": message
+            "message": message,
+            "view": view  # On stocke la view ici pour éviter les erreurs
         }
 
     @app_commands.command(name="reset_combat", description="Réinitialiser ton combat en cours")
@@ -107,7 +108,7 @@ class CombatView(discord.ui.View):
             value=", ".join([m.mention for m in combat["joueurs_present"]])
         )
         embed.add_field(name="Points par joueur", value=f"{combat['points']} points")
-        await combat["message"].edit(embed=embed, view=self)
+        await combat["message"].edit(embed=embed, view=combat["view"])
 
 
 # ---------------------------
@@ -136,6 +137,7 @@ class JoueurSelect(discord.ui.UserSelect):
 
         await interaction.response.defer()  # ✅ Evite l’échec de l’interaction
 
+        # Met à jour le message principal avec la view stockée
         combat_message = combat["message"]
         embed = discord.Embed(
             title=f"📝 Type de combat : {combat['type']}",
@@ -148,7 +150,7 @@ class JoueurSelect(discord.ui.UserSelect):
         )
         embed.add_field(name="Points par joueur", value=f"{combat['points']} points")
 
-        await combat_message.edit(embed=embed, view=combat_message.components[0].view)
+        await combat_message.edit(embed=embed, view=combat["view"])
 
 
 # ---------------------------
