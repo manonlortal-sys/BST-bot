@@ -50,6 +50,19 @@ class CombatCog(commands.Cog):
         view = CombatTypeView(self, joueur_id)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
 
+    # ---------------------------
+    # Commande /reset_combat pour tester
+    # ---------------------------
+    @app_commands.command(name="reset_combat", description="Réinitialiser ton combat en cours")
+    async def reset_combat(self, interaction: discord.Interaction):
+        joueur_id = interaction.user.id
+        if joueur_id in self.combats_en_cours:
+            del self.combats_en_cours[joueur_id]
+            await interaction.response.send_message("✅ Ton combat en cours a été réinitialisé.", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Tu n'as pas de combat en cours.", ephemeral=True)
+
+
 # ---------------------------
 # Vue avec boutons Attaque / Défense + ajout joueurs
 # ---------------------------
