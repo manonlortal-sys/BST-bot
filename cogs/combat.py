@@ -46,7 +46,7 @@ class CombatCog(commands.Cog):
         embed.add_field(name="Joueurs présents", value=interaction.user.mention)
         embed.add_field(name="Points par joueur", value="0 points")
 
-        # Vue avec boutons
+        # Vue avec boutons (le SelectMenu sera ajouté après le choix)
         view = CombatTypeView(self, joueur_id)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
 
@@ -64,17 +64,14 @@ class CombatCog(commands.Cog):
 
 
 # ---------------------------
-# Vue avec boutons Attaque / Défense + ajout joueurs
+# Vue avec boutons Attaque / Défense
 # ---------------------------
 class CombatTypeView(discord.ui.View):
     def __init__(self, cog, joueur_id):
         super().__init__(timeout=None)
         self.cog = cog
         self.joueur_id = joueur_id
-        self.joueurs_choisis = []  # pour SelectMenu
-
-        # Ajouter SelectMenu après le choix type
-        self.add_item(JoueurSelect(self.cog, self.joueur_id))
+        # On n'ajoute PAS le SelectMenu ici pour éviter le crash
 
     @discord.ui.button(label="🗡️ Attaque", style=discord.ButtonStyle.red)
     async def attaque_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -82,6 +79,14 @@ class CombatTypeView(discord.ui.View):
             await interaction.response.send_message("❌ Ce n'est pas ton combat.", ephemeral=True)
             return
         self.cog.combats_en_cours[self.joueur_id]["type"] = "Attaque"
+        # Ajouter maintenant le SelectMenu
+        if not any(isinstance(i, JoueurSelect) for i in self.children):
+            options = [
+                discord.SelectOption(label=member.name, value=str(member.id))
+                for member in interaction.guild.members if not member.bot and member != interaction.user
+            ]
+            if options:  # seulement si on a des options
+                self.add_item(JoueurSelect(self.cog, self.joueur_id, options))
         await self.update_embed(interaction)
 
     @discord.ui.button(label="🛡️ Défense", style=discord.ButtonStyle.green)
@@ -90,6 +95,14 @@ class CombatTypeView(discord.ui.View):
             await interaction.response.send_message("❌ Ce n'est pas ton combat.", ephemeral=True)
             return
         self.cog.combats_en_cours[self.joueur_id]["type"] = "Défense"
+        # Ajouter maintenant le SelectMenu
+        if not any(isinstance(i, JoueurSelect) for i in self.children):
+            options = [
+                discord.SelectOption(label=member.name, value=str(member.id))
+                for member in interaction.guild.members if not member.bot and member != interaction.user
+            ]
+            if options:
+                self.add_item(JoueurSelect(self.cog, self.joueur_id, options))
         await self.update_embed(interaction)
 
     async def update_embed(self, interaction: discord.Interaction):
@@ -104,20 +117,20 @@ class CombatTypeView(discord.ui.View):
         embed.add_field(name="Points par joueur", value=f"{combat['points']} points")
         await interaction.response.edit_message(embed=embed, view=self)
 
+
 # ---------------------------
 # SelectMenu pour ajouter les joueurs
 # ---------------------------
 class JoueurSelect(discord.ui.Select):
-    def __init__(self, cog, joueur_id):
+    def __init__(self, cog, joueur_id, options):
+        super().__init__(
+            placeholder="Ajouter des joueurs (max 4)",
+            min_values=0,
+            max_values=MAX_JOUEURS-1,
+            options=options
+        )
         self.cog = cog
         self.joueur_id = joueur_id
-
-        options = [
-            discord.SelectOption(label=member.name, value=str(member.id))
-            for member in cog.bot.get_all_members()
-        ]
-
-        super().__init__(placeholder="Ajouter des joueurs (max 4)", min_values=0, max_values=MAX_JOUEURS-1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.joueur_id:
@@ -136,6 +149,7 @@ class JoueurSelect(discord.ui.Select):
         # Mettre à jour l’embed
         view = self.view
         await view.update_embed(interaction)
+
 
 # ---------------------------
 # Fonction pour charger le cog depuis main.py
