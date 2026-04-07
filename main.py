@@ -31,7 +31,7 @@ class MyBot(commands.Bot):
 
     async def setup_hook(self):
         # Charger les cogs avant la connexion
-        await self.load_extension("cogs.combat")
+        await self.load_extension("cogs.combat", "cogs.leaderboard")
         # Synchronisation globale des commandes slash
         await self.tree.sync()
         print("✅ Cogs chargés et commandes slash synchronisées")
